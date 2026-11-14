@@ -1,0 +1,96 @@
+.celestial-cursor-tooltip {
+  position: fixed;
+  z-index: 950;
+  pointer-events: none;
+  min-width: 245px;
+  max-width: 290px;
+  padding: 9px 12px;
+  background: rgba(8, 13, 24, 0.93);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(110, 243, 230, 0.35);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.82);
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  color: #e2f1f8;
+  opacity: 0;
+  transform: translate(16px, 16px);
+  transition: opacity 0.12s ease;
+}
+
+.celestial-cursor-tooltip.visible {
+  opacity: 1;
+}
+
+.celestial-cursor-tooltip.is-sun {
+  border-color: rgba(255, 209, 102, 0.55);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.85), 0 0 14px rgba(255, 209, 102, 0.12);
+}
+
+.celestial-cursor-tooltip.is-earth {
+  border-color: rgba(86, 207, 225, 0.55);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.85), 0 0 14px rgba(86, 207, 225, 0.12);
+}
+
+.celestial-tooltip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 5px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.celestial-tooltip-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.celestial-cursor-tooltip.is-sun .celestial-tooltip-title {
+  color: #ffd166;
+}
+
+.celestial-cursor-tooltip.is-earth .celestial-tooltip-title {
+  color: #56cfe1;
+}
+
+.celestial-tooltip-badge {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cde6f5;
+}
+
+.celestial-tooltip-desc {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: rgba(215, 235, 245, 0.78);
+  margin-bottom: 7px;
+}
+
+.celestial-tooltip-specs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11.5px;
+}
+
+.celestial-spec-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.celestial-spec-label {
+  color: rgba(185, 210, 225, 0.65);
+}
+
+.celestial-spec-val {
+  color: #f0f8ff;
+  font-weight: 600;
+  text-align: right;
+}

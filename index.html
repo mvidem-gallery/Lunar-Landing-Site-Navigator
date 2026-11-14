@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="uk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lunar Surface Explorer — 3D Moon Telemetry</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background-color: #000000;
+      }
+
+      #canvas-container {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 1;
+      }
+
+      .hud-panel {
+        position: fixed;
+        z-index: 10;
+        background: rgba(14, 21, 33, 0.84);
+        border: 1px solid rgba(79, 195, 247, 0.25);
+        border-radius: 6px;
+        padding: 12px 14px;
+        color: #d8e6f3;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 12px;
+        backdrop-filter: blur(6px);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.65);
+        user-select: none;
+      }
+
+      #controls-panel {
+        top: 16px;
+        left: 16px;
+        width: 340px;
+      }
+
+      #telemetry-panel {
+        top: 16px;
+        right: 16px;
+        width: 280px;
+      }
+
+      #scale-bar-container {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 10;
+        background: rgba(14, 21, 33, 0.84);
+        border: 1px solid rgba(79, 195, 247, 0.25);
+        border-radius: 6px;
+        padding: 8px 12px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        pointer-events: none;
+      }
+
+      .panel-header {
+        font-size: 11px;
+        font-weight: bold;
+        letter-spacing: 0.8px;
+        color: #90caf9;
+        border-bottom: 1px solid rgba(79, 195, 247, 0.2);
+        padding-bottom: 6px;
+        margin-bottom: 10px;
+      }
+
+      .time-controls {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+
+      .hud-input,
+      .hud-select,
+      .hud-btn {
+        background: rgba(24, 35, 52, 0.9);
+        border: 1px solid rgba(79, 195, 247, 0.3);
+        border-radius: 4px;
+        color: #e3f2fd;
+        font-family: inherit;
+        font-size: 12px;
+        padding: 5px 8px;
+      }
+
+      .hud-input {
+        flex: 1;
+      }
+
+      .hud-btn {
+        cursor: pointer;
+        padding: 5px 12px;
+      }
+
+      .hud-btn:hover {
+        background: rgba(41, 61, 89, 0.95);
+        border-color: #4fc3f7;
+      }
+
+      .hud-select {
+        width: 100%;
+        margin-bottom: 10px;
+      }
+
+      .checkbox-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .control-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-size: 11.5px;
+      }
+
+      .hud-divider {
+        height: 1px;
+        background: rgba(79, 195, 247, 0.2);
+        margin: 10px 0;
+      }
+
+      .data-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        line-height: 1.55;
+        font-size: 11.5px;
+      }
+
+      .data-row span:first-child {
+        color: #9fb3c8;
+      }
+
+      .data-val {
+        font-weight: bold;
+        color: #e1f5fe;
+        text-align: right;
+      }
+
+      .scale-label {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 11px;
+        font-weight: bold;
+        color: #ffd54f;
+        margin-bottom: 4px;
+      }
+
+      .scale-line {
+        width: 110px;
+        height: 6px;
+        border-left: 2px solid #4fc3f7;
+        border-right: 2px solid #4fc3f7;
+        border-bottom: 2px solid #4fc3f7;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Повноекранний 3D-простір із Місяцем у центрі -->
+    <div id="canvas-container"></div>
+
+    <!-- Ліва верхня панель керування, параметрів орбіти та ефемерид -->
+    <div id="controls-panel" class="hud-panel">
+      <div class="panel-header">ЧАС СПОСТЕРЕЖЕННЯ (UTC)</div>
+
+      <div class="time-controls">
+        <input type="datetime-local" id="date-picker" class="hud-input" />
+        <button type="button" id="now-btn" class="hud-btn">Зараз</button>
+      </div>
+
+      <select id="layer-selector" class="hud-select">
+        <option value="lro_wac_local">Локальний шар: LRO WAC (Z2–Z8)</option>
+        <option value="openplanetary_lro">Глобальна: OpenPlanetary LRO (до Z11)</option>
+        <option value="nasa_trek_wac">NASA Moon Trek: LRO WAC Mosaic</option>
+        <option value="nasa_trek_lola">NASA Moon Trek: LOLA Elevation</option>
+      </select>
+
+      <div class="checkbox-group">
+        <label class="control-checkbox">
+          <input type="checkbox" id="toggle-earth-disk" checked />
+          <span>Видима з Землі область (лібрація)</span>
+        </label>
+
+        <label class="control-checkbox">
+          <input type="checkbox" id="toggle-solar-lighting" checked />
+          <span>Освітлення відносно Сонця</span>
+        </label>
+
+        <label class="control-checkbox">
+          <input type="checkbox" id="toggle-illumination-heatmap" />
+          <span>Теплова карта освітленості</span>
+        </label>
+
+        <div id="heatmap-legend" style="display: none; margin: 2px 0 4px 0;">
+          <div
+            style="
+              height: 8px;
+              border-radius: 4px;
+              background: linear-gradient(
+                90deg,
+                #d11a0f 0%,
+                #f55714 25%,
+                #fcb829 52%,
+                #f5f56b 74%,
+                #73ebd9 86%,
+                #2959f5 95%,
+                #ad2eeb 100%
+              );
+              border: 1px solid rgba(255, 255, 255, 0.2);
+            "
+          ></div>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              font-size: 10px;
+              color: #9ec5d8;
+              margin-top: 2px;
+            "
+          >
+            <span>0% (Ніч)</span>
+            <span>50%</span>
+            <span>85%</span>
+            <span>100%</span>
+          </div>
+        </div>
+
+        <label class="control-checkbox">
+          <input type="checkbox" id="toggle-coord-grid" />
+          <span>Координатна сітка (широта / довгота)</span>
+        </label>
+      </div>
+
+      <div class="hud-divider"></div>
+
+      <div id="camera-status">
+        <div class="data-row">
+          <span>Масштаб (Zoom):</span>
+          <span class="data-val" style="color: #ffd54f">1.00×</span>
+        </div>
+        <div class="data-row">
+          <span>Висота орбіти:</span>
+          <span class="data-val">— км</span>
+        </div>
+        <div class="data-row">
+          <span>Рівень тайлів (LOD):</span>
+          <span class="data-val">Z2</span>
+        </div>
+        <div class="data-row">
+          <span>Роздільна здатність:</span>
+          <span class="data-val" style="color: #80deea">5330 м/піксель</span>
+        </div>
+      </div>
+
+      <div class="hud-divider"></div>
+
+      <div id="solar-status">Ініціалізація ефемерид...</div>
+    </div>
+
+    <!-- Права верхня панель телеметрії поверхні -->
+    <div id="telemetry-panel" class="hud-panel">
+      <div class="panel-header">ТЕЛЕМЕТРІЯ ПОВЕРХНІ</div>
+      <div id="telemetry-content">Наведіть курсор на поверхню Місяця</div>
+    </div>
+
+    <!-- Права нижня масштабна лінійка -->
+    <div id="scale-bar-container">
+      <span id="scale-label" class="scale-label">500 км</span>
+      <div id="scale-line" class="scale-line"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
