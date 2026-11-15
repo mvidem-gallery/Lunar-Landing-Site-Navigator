@@ -96,18 +96,30 @@ export class RaycastController {
     return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
   }
 
+  _isObjectVisible(object) {
+    for (let current = object; current; current = current.parent) {
+      if (!current.visible) return false;
+    }
+    return true;
+  }
+
   _checkCelestialHit() {
     if (!this.celestialTargets.length) return null;
 
+    const visibleTargets = [];
     for (const target of this.celestialTargets) {
+      if (!this._isObjectVisible(target)) continue;
       target.updateMatrixWorld(true);
+      visibleTargets.push(target);
     }
-    const bodyHits = this.raycaster.intersectObjects(this.celestialTargets, false);
+    if (!visibleTargets.length) return null;
+
+    const bodyHits = this.raycaster.intersectObjects(visibleTargets, false);
     if (bodyHits.length > 0) {
       return bodyHits[0].object.name;
     }
 
-    for (const target of this.celestialTargets) {
+    for (const target of visibleTargets) {
       target.getWorldPosition(this._targetWorldPos);
       if (!target.geometry.boundingSphere) {
         target.geometry.computeBoundingSphere();

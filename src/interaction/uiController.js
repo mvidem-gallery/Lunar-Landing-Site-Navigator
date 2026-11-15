@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { LOD_CONFIG, MAP_LAYERS, MOON_CONFIG } from '../config/constants.js';
+import { LOD_CONFIG, MAP_LAYERS, MOON_CONFIG, VIEW_MODES } from '../config/constants.js';
 
 const TAB_TITLES = {
   missions: { title: 'Mission', badge: 'MISSION' },
@@ -33,6 +33,7 @@ export class UIController {
 
     this.topFloatingBar = document.getElementById('top-floating-bar');
     this.topMissionPill = document.getElementById('top-mission-pill');
+    this.viewModeBtns = Array.from(document.querySelectorAll('[data-view-mode]'));
     this.bottomDock = document.getElementById('bottom-dock');
 
     // Пошук
@@ -96,6 +97,7 @@ export class UIController {
     this.coordGridToggleCallback = null;
     this.homeCallback = null;
     this.flyToCallback = null;
+    this.viewModeChangeCallback = null;
     this.searchProvider = null;
 
     this._isRightDrawerOpen = false;
@@ -111,6 +113,14 @@ export class UIController {
   }
 
   _bindEvents() {
+    this.viewModeBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.viewMode === VIEW_MODES.CISLUNAR ? VIEW_MODES.CISLUNAR : VIEW_MODES.LUNAR;
+        this.setViewModeUI(mode);
+        this.viewModeChangeCallback?.(mode);
+      });
+    });
+
     this.railTabBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
         const tab = btn.dataset.railTab;
@@ -380,6 +390,16 @@ export class UIController {
     this.rightRulerBtn?.classList.toggle('active', isActive);
   }
 
+  setViewModeUI(mode) {
+    const activeMode =
+      mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
+        ? VIEW_MODES.CISLUNAR
+        : VIEW_MODES.LUNAR;
+    this.viewModeBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.viewMode === activeMode);
+    });
+  }
+
   _syncLayerInfo(layerId) {
     const info = LAYER_DESCRIPTIONS[layerId];
     if (info && this.activeLayerNameEl && this.activeLayerDescEl) {
@@ -414,6 +434,10 @@ export class UIController {
 
   onFlyToSearch(callback) {
     this.flyToCallback = callback;
+  }
+
+  onViewModeChange(callback) {
+    this.viewModeChangeCallback = callback;
   }
 
   setSearchProvider(providerFn) {

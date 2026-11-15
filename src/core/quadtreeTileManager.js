@@ -1,6 +1,14 @@
 import * as THREE from 'three';
-import { MOON_CONFIG, MAP_LAYERS, LOD_CONFIG } from '../config/constants.js';
+import { MOON_CONFIG, MAP_LAYERS, LOD_CONFIG, VIEW_MODES } from '../config/constants.js';
 import { TileCache } from './tileCache.js';
+
+const OVERLAY_RADIUS_STEP = 0.00000015;
+
+function positiveMod(val, step) {
+  if (!step || step <= 0) return 0;
+  const r = val - Math.floor(val / step) * step;
+  return r < 0 ? r + step : r;
+}
 
 class QuadNode {
   constructor(manager, z, x, y, parent = null) {
@@ -14,6 +22,9 @@ class QuadNode {
     this.isReady = false;
     this.isLoading = false;
     this.hasFailed = false;
+    this.surfaceOffset = 0;
+    this._remStep = null;
+    this._remSubStep = null;
 
     const cols = manager.getColsCount(z);
     const rows = manager.getRowsCount(z);
@@ -71,8 +82,8 @@ class QuadNode {
 
     const layer = MAP_LAYERS[this.manager.currentLayerId];
     const baseMax = layer ? (layer.baseMaxZoom ?? 8) : 8;
-    const radiusOffset =
-      MOON_CONFIG.RADIUS + (isOverlay ? 0.000001 * Math.max(1, this.z - baseMax) : 0);
+    this.surfaceOffset = isOverlay ? OVERLAY_RADIUS_STEP * Math.max(1, this.z - baseMax) : 0;
+    const radiusOffset = MOON_CONFIG.RADIUS + this.surfaceOffset;
 
     const geometry = new THREE.SphereGeometry(
       radiusOffset,
@@ -84,7 +95,12 @@ class QuadNode {
       thetaLength
     );
 
-    const material = this.manager.createTileMaterial(texture, isOverlay, this.z, isTransparent);
+    const material = this.manager.createTileMaterial(texture, isOverlay, this.z, isTransparent, {
+      lonStart: this.lonStart,
+      lonEnd: this.lonEnd,
+      latStart: this.latStart,
+      latEnd: this.latEnd,
+    });
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.rotation.y = Math.PI;
     this.mesh.renderOrder = isOverlay ? 2 + (this.z - baseMax) : 1;
@@ -92,8 +108,27 @@ class QuadNode {
     this.manager.group.add(this.mesh);
   }
 
+  syncGridRemainders(stepDeg, subStepDeg) {
+    if (!this.mesh || this.z < 6) return;
+    if (this._remStep === stepDeg && this._remSubStep === subStepDeg) return;
+    const tileUniforms = this.mesh.material?.userData?.tileUniforms;
+    if (!tileUniforms) return;
+
+    tileUniforms.uTileGridRem.value.set(
+      positiveMod(this.lonStart, stepDeg),
+      positiveMod(this.lonStart, subStepDeg),
+      positiveMod(this.latStart, stepDeg),
+      positiveMod(this.latStart, subStepDeg)
+    );
+    this._remStep = stepDeg;
+    this._remSubStep = subStepDeg;
+  }
+
   requestTexture(priority) {
     if (this.isReady || this.isLoading || this.hasFailed || !this.sourceSpec) return;
+    if (this.z > LOD_CONFIG.MIN_ZOOM && this.manager.isHighLodBlocked()) {
+      return;
+    }
     this.isLoading = true;
 
     this.manager.cache.requestTile(
@@ -162,8 +197,15 @@ export class QuadtreeTileManager {
 
     this.sharedUniforms = sharedUniforms;
     this.currentLayerId = LOD_CONFIG.DEFAULT_LAYER;
+    this.viewMode = VIEW_MODES.LUNAR;
+    this._highLodMaxCameraDistance =
+      LOD_CONFIG.HIGH_LOD_MAX_CAMERA_DISTANCE ?? 3 * MOON_CONFIG.RADIUS;
+    this._lastCamDist = Infinity;
+
     this.cache = new TileCache(LOD_CONFIG.CACHE_SIZE);
     this.roots = [];
+    this._visibleNodes = [];
+    this.maxVisibleSurfaceOffset = 0;
 
     this._frustum = new THREE.Frustum();
     this._projScreenMatrix = new THREE.Matrix4();
@@ -171,6 +213,21 @@ export class QuadtreeTileManager {
     this._camDir = new THREE.Vector3();
 
     this.initRoots();
+  }
+
+  setViewMode(mode) {
+    this.viewMode =
+      mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
+        ? VIEW_MODES.CISLUNAR
+        : VIEW_MODES.LUNAR;
+    return this.viewMode;
+  }
+
+  isHighLodBlocked(camDist = this._lastCamDist) {
+    if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      return true;
+    }
+    return Number.isFinite(camDist) && camDist > this._highLodMaxCameraDistance;
   }
 
   getColsCount(z) {
@@ -248,7 +305,9 @@ export class QuadtreeTileManager {
     return null;
   }
 
-  canNodeSplit(node) {
+  canNodeSplit(node, camDist = this._lastCamDist) {
+    if (this.isHighLodBlocked(camDist)) return false;
+
     const layer = MAP_LAYERS[this.currentLayerId];
     if (!layer) return false;
 
@@ -282,6 +341,8 @@ export class QuadtreeTileManager {
       root.dispose();
     }
     this.roots = [];
+    this._visibleNodes = [];
+    this.maxVisibleSurfaceOffset = 0;
   }
 
   switchMapLayer(layerId) {
@@ -291,7 +352,53 @@ export class QuadtreeTileManager {
     this.initRoots();
   }
 
-  createTileMaterial(texture, isOverlay = false, zoomLevel = 2, isTransparent = false) {
+  getSurfaceOffsetForBounds(minLat, maxLat, minLon, maxLon) {
+    if (!this._visibleNodes || this._visibleNodes.length === 0) {
+      return this.maxVisibleSurfaceOffset || 0;
+    }
+
+    const lonRanges = [];
+    let lo = minLon;
+    let hi = maxLon;
+    while (lo < -180 && hi <= -180) {
+      lo += 360;
+      hi += 360;
+    }
+    while (lo >= 180 && hi > 180) {
+      lo -= 360;
+      hi -= 360;
+    }
+    if (lo < -180) {
+      lonRanges.push([lo + 360, 180], [-180, hi]);
+    } else if (hi > 180) {
+      lonRanges.push([lo, 180], [-180, hi - 360]);
+    } else {
+      lonRanges.push([lo, hi]);
+    }
+
+    let found = false;
+    let maxOffset = 0;
+    for (const node of this._visibleNodes) {
+      if (node.latEnd <= minLat || node.latStart >= maxLat) continue;
+      let lonHit = false;
+      for (const [rMin, rMax] of lonRanges) {
+        if (node.lonEnd > rMin && node.lonStart < rMax) {
+          lonHit = true;
+          break;
+        }
+      }
+      if (lonHit) {
+        found = true;
+        if (node.surfaceOffset > maxOffset) {
+          maxOffset = node.surfaceOffset;
+        }
+      }
+    }
+
+    return found ? maxOffset : (this.maxVisibleSurfaceOffset || 0);
+  }
+
+  createTileMaterial(texture, isOverlay = false, zoomLevel = 2, isTransparent = false, bounds = null) {
     const material = new THREE.MeshStandardMaterial({
       map: texture,
       bumpMap: texture,
@@ -305,6 +412,28 @@ export class QuadtreeTileManager {
       polygonOffsetUnits: isOverlay ? -zoomLevel : 0,
     });
 
+    const lonStart = bounds ? bounds.lonStart : -180;
+    const lonEnd = bounds ? bounds.lonEnd : 180;
+    const latStart = bounds ? bounds.latStart : -90;
+    const latEnd = bounds ? bounds.latEnd : 90;
+    const stepDeg = this.sharedUniforms.uGridStepDeg?.value ?? 15.0;
+    const subStepDeg = this.sharedUniforms.uGridSubStepDeg?.value ?? 5.0;
+
+    const tileUniforms = {
+      uUseUvGrid: { value: zoomLevel >= 6 },
+      uTileStart: { value: new THREE.Vector2(lonStart, latStart) },
+      uTileSpan: { value: new THREE.Vector2(lonEnd - lonStart, latEnd - latStart) },
+      uTileGridRem: {
+        value: new THREE.Vector4(
+          positiveMod(lonStart, stepDeg),
+          positiveMod(lonStart, subStepDeg),
+          positiveMod(latStart, stepDeg),
+          positiveMod(latStart, subStepDeg)
+        ),
+      },
+    };
+    material.userData.tileUniforms = tileUniforms;
+
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uEarthDirection = this.sharedUniforms.uEarthDirection;
       shader.uniforms.uSunDirection = this.sharedUniforms.uSunDirection;
@@ -316,18 +445,24 @@ export class QuadtreeTileManager {
       shader.uniforms.uGridStepDeg = this.sharedUniforms.uGridStepDeg;
       shader.uniforms.uGridSubStepDeg = this.sharedUniforms.uGridSubStepDeg;
       shader.uniforms.uGridOpacity = this.sharedUniforms.uGridOpacity;
+      shader.uniforms.uUseUvGrid = tileUniforms.uUseUvGrid;
+      shader.uniforms.uTileStart = tileUniforms.uTileStart;
+      shader.uniforms.uTileSpan = tileUniforms.uTileSpan;
+      shader.uniforms.uTileGridRem = tileUniforms.uTileGridRem;
 
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
           `#include <common>
            varying vec3 vWorldSphereNormal;
-           varying vec3 vLocalSpherePos;`
+           varying vec3 vLocalSpherePos;
+           varying vec2 vGridTileUv;`
         )
         .replace(
           '#include <worldpos_vertex>',
           `#include <worldpos_vertex>
            vLocalSpherePos = position;
+           vGridTileUv = uv;
            vWorldSphereNormal = normalize((modelMatrix * vec4(position, 1.0)).xyz);`
         );
 
@@ -337,6 +472,7 @@ export class QuadtreeTileManager {
           `#include <common>
            varying vec3 vWorldSphereNormal;
            varying vec3 vLocalSpherePos;
+           varying vec2 vGridTileUv;
            uniform vec3 uEarthDirection;
            uniform vec3 uSunDirection;
            uniform bool uShowEarthDisk;
@@ -349,6 +485,10 @@ export class QuadtreeTileManager {
            uniform float uGridStepDeg;
            uniform float uGridSubStepDeg;
            uniform float uGridOpacity;
+           uniform bool uUseUvGrid;
+           uniform vec2 uTileStart;
+           uniform vec2 uTileSpan;
+           uniform vec4 uTileGridRem;
 
            vec3 sampleIlluminationHeatmap(float t) {
              float x = clamp(t, 0.0, 1.0);
@@ -368,10 +508,10 @@ export class QuadtreeTileManager {
              return mix(c5, c6, (x - 0.95) / 0.05);
            }
 
-           float gridLineMask(float angleDeg, float stepDeg, float thicknessPx) {
+           float gridLineMask(float angleDeg, float stepDeg, float thicknessPx, float minDeriv) {
              float halfStep = stepDeg * 0.5;
              float dist = abs(mod(angleDeg + halfStep, stepDeg) - halfStep);
-             float deriv = max(fwidth(angleDeg), 1e-5);
+             float deriv = max(fwidth(angleDeg), minDeriv);
              return 1.0 - smoothstep(0.0, deriv * thicknessPx, dist);
            }
 
@@ -432,22 +572,68 @@ export class QuadtreeTileManager {
            }
 
            if (uShowCoordGrid) {
-             vec3 nLocal = normalize(vLocalSpherePos);
-             float latDeg = degrees(asin(clamp(nLocal.y, -1.0, 1.0)));
-             float lonDeg = degrees(atan(nLocal.z, -nLocal.x));
+             float camAltGrid = max(0.00002, length(cameraPosition) - 1.0);
+             float minDegDeriv = degrees(camAltGrid * 0.00085);
 
-             float equatorMask = 1.0 - smoothstep(0.0, max(fwidth(latDeg), 1e-5) * 2.2, abs(latDeg));
-             float pmDistDeg = degrees(asin(clamp(abs(nLocal.z) / max(length(nLocal.xz), 1e-5), 0.0, 1.0)));
-             float pmDeriv = max(fwidth(nLocal.z) * 57.29578 / max(length(nLocal.xz), 0.15), 1e-5);
-             float primeMeridianMask = 1.0 - smoothstep(0.0, pmDeriv * 2.2, pmDistDeg);
+             float equatorMask = 0.0;
+             float primeMeridianMask = 0.0;
+             float subLat = 0.0;
+             float subLon = 0.0;
+             float majorLat = 0.0;
+             float majorLon = 0.0;
+
+             if (uUseUvGrid) {
+               float lonDelta = vGridTileUv.x * uTileSpan.x;
+               float latDelta = vGridTileUv.y * uTileSpan.y;
+               float lonDeriv = max(fwidth(vGridTileUv.x) * uTileSpan.x, minDegDeriv);
+               float latDeriv = max(fwidth(vGridTileUv.y) * uTileSpan.y, minDegDeriv);
+
+               if (abs(uTileStart.y) <= uTileSpan.y + 0.5) {
+                 float latAbs = abs(uTileStart.y + latDelta);
+                 equatorMask = 1.0 - smoothstep(0.0, latDeriv * 2.2, latAbs);
+               }
+
+               float pmDistDeg = 999.0;
+               if (abs(uTileStart.x) <= uTileSpan.x + 0.5) {
+                 pmDistDeg = abs(uTileStart.x + lonDelta);
+               } else if (abs(uTileStart.x + 180.0) <= uTileSpan.x + 0.5) {
+                 pmDistDeg = abs((uTileStart.x + 180.0) + lonDelta);
+               } else if (abs(180.0 - (uTileStart.x + uTileSpan.x)) <= uTileSpan.x + 0.5) {
+                 pmDistDeg = abs((180.0 - uTileStart.x) - lonDelta);
+               }
+               primeMeridianMask = 1.0 - smoothstep(0.0, lonDeriv * 2.2, pmDistDeg);
+
+               float halfSub = uGridSubStepDeg * 0.5;
+               float halfMajor = uGridStepDeg * 0.5;
+
+               float subLatDist = abs(mod(uTileGridRem.w + latDelta + halfSub, uGridSubStepDeg) - halfSub);
+               float subLonDist = abs(mod(uTileGridRem.y + lonDelta + halfSub, uGridSubStepDeg) - halfSub);
+               subLat = (1.0 - smoothstep(0.0, latDeriv * 1.1, subLatDist)) * (1.0 - equatorMask);
+               subLon = (1.0 - smoothstep(0.0, lonDeriv * 1.1, subLonDist)) * (1.0 - primeMeridianMask);
+
+               float majLatDist = abs(mod(uTileGridRem.z + latDelta + halfMajor, uGridStepDeg) - halfMajor);
+               float majLonDist = abs(mod(uTileGridRem.x + lonDelta + halfMajor, uGridStepDeg) - halfMajor);
+               majorLat = (1.0 - smoothstep(0.0, latDeriv * 1.6, majLatDist)) * (1.0 - equatorMask);
+               majorLon = (1.0 - smoothstep(0.0, lonDeriv * 1.6, majLonDist)) * (1.0 - primeMeridianMask);
+             } else {
+               vec3 nLocal = normalize(vLocalSpherePos);
+               float latDeg = degrees(asin(clamp(nLocal.y, -1.0, 1.0)));
+               float lonDeg = degrees(atan(nLocal.z, -nLocal.x));
+
+               equatorMask = 1.0 - smoothstep(0.0, max(fwidth(latDeg), minDegDeriv) * 2.2, abs(latDeg));
+               float pmDistDeg = degrees(asin(clamp(abs(nLocal.z) / max(length(nLocal.xz), 1e-5), 0.0, 1.0)));
+               float pmDeriv = max(fwidth(nLocal.z) * 57.29578 / max(length(nLocal.xz), 0.15), minDegDeriv);
+               primeMeridianMask = 1.0 - smoothstep(0.0, pmDeriv * 2.2, pmDistDeg);
+
+               subLat = gridLineMask(latDeg, uGridSubStepDeg, 1.1, minDegDeriv) * (1.0 - equatorMask);
+               subLon = gridLineMask(lonDeg, uGridSubStepDeg, 1.1, minDegDeriv) * (1.0 - primeMeridianMask);
+
+               majorLat = gridLineMask(latDeg, uGridStepDeg, 1.6, minDegDeriv) * (1.0 - equatorMask);
+               majorLon = gridLineMask(lonDeg, uGridStepDeg, 1.6, minDegDeriv) * (1.0 - primeMeridianMask);
+             }
+
              float axisMask = max(equatorMask, primeMeridianMask);
-
-             float subLat = gridLineMask(latDeg, uGridSubStepDeg, 1.1) * (1.0 - equatorMask);
-             float subLon = gridLineMask(lonDeg, uGridSubStepDeg, 1.1) * (1.0 - primeMeridianMask);
              float subMask = max(subLat, subLon);
-
-             float majorLat = gridLineMask(latDeg, uGridStepDeg, 1.6) * (1.0 - equatorMask);
-             float majorLon = gridLineMask(lonDeg, uGridStepDeg, 1.6) * (1.0 - primeMeridianMask);
              float majorMask = max(majorLat, majorLon);
 
              vec3 subColor = vec3(0.35, 0.82, 0.95);
@@ -472,13 +658,33 @@ export class QuadtreeTileManager {
 
     const camPos = camera.position;
     const camDist = camPos.length();
+    this._lastCamDist = camDist;
     this._camDir.copy(camPos).divideScalar(camDist);
 
+    const highLodBlocked = this.isHighLodBlocked(camDist);
     const horizonCos = MOON_CONFIG.RADIUS / camDist;
     const layer = MAP_LAYERS[this.currentLayerId];
     const baseMaxZoom = layer ? (layer.baseMaxZoom ?? layer.maxZoom ?? 8) : 8;
 
     let highestVisibleZoom = LOD_CONFIG.MIN_ZOOM;
+    this._visibleNodes.length = 0;
+    this.maxVisibleSurfaceOffset = 0;
+
+    const showGrid = Boolean(this.sharedUniforms.uShowCoordGrid?.value);
+    const gridStepDeg = this.sharedUniforms.uGridStepDeg?.value ?? 15.0;
+    const gridSubStepDeg = this.sharedUniforms.uGridSubStepDeg?.value ?? 5.0;
+
+    const markVisible = (node) => {
+      node.mesh.visible = true;
+      highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
+      this._visibleNodes.push(node);
+      if (node.surfaceOffset > this.maxVisibleSurfaceOffset) {
+        this.maxVisibleSurfaceOffset = node.surfaceOffset;
+      }
+      if (showGrid) {
+        node.syncGridRemainders(gridStepDeg, gridSubStepDeg);
+      }
+    };
 
     const traverse = (node) => {
       const dot = node.centerNormal.dot(this._camDir);
@@ -505,7 +711,10 @@ export class QuadtreeTileManager {
       const tileArcLength = (Math.PI * MOON_CONFIG.RADIUS) / Math.pow(2, node.z);
       const screenRatio = tileArcLength / distToCamera;
 
-      const wantSplit = screenRatio > (1.0 / LOD_CONFIG.SPLIT_THRESHOLD) && this.canNodeSplit(node);
+      const wantSplit =
+        !highLodBlocked &&
+        screenRatio > 1.0 / LOD_CONFIG.SPLIT_THRESHOLD &&
+        this.canNodeSplit(node, camDist);
 
       if (wantSplit && !node.hasFailed) {
         if (!node.children) {
@@ -532,16 +741,13 @@ export class QuadtreeTileManager {
         }
 
         if (allChildrenReady && !anyChildFailed && !hasTransparentChild) {
-          // Усі 4 дочірні тайли завантажені і непрозорі — приховуємо батьківський тайл, щоб уникнути overdraw і z-fighting
           if (node.mesh) node.mesh.visible = false;
           for (const child of node.children) {
             traverse(child);
           }
         } else {
-          // Батьківський тайл залишається видимим як підкладка, поки завантажуються дочірні
           if (node.isReady && node.mesh) {
-            node.mesh.visible = true;
-            highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
+            markVisible(node);
           }
 
           for (const child of node.children) {
@@ -550,7 +756,6 @@ export class QuadtreeTileManager {
               continue;
             }
             if (isOverlayZone) {
-              // Для Z8+ одразу показуємо вже готові тайли вищої точності поверх підкладки
               if (child.isReady) {
                 traverse(child);
               } else if (child.mesh) {
@@ -569,8 +774,7 @@ export class QuadtreeTileManager {
           node.requestTexture(distToCamera);
         }
         if (node.isReady && node.mesh) {
-          node.mesh.visible = true;
-          highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
+          markVisible(node);
         }
       }
     };

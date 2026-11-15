@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "download:starmap": "node scripts/download_starmap.mjs"
+    "download:starmap": "node scripts/download_starmap.mjs",
+    "download:earth": "node scripts/download_earth_textures.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"

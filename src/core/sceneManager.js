@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { MOON_CONFIG, LOD_CONFIG } from '../config/constants.js';
+import { MOON_CONFIG, EARTH_CONFIG, LOD_CONFIG, VIEW_MODES } from '../config/constants.js';
 
 export class SceneManager {
   constructor(container) {
@@ -33,19 +33,138 @@ export class SceneManager {
     this.controls.enableZoom = false;
     this.controls.enablePan = false;
 
+    this.viewMode = VIEW_MODES.LUNAR;
     this.minSurfaceClearance = 0.00003;
-    this.minRadialDistance = MOON_CONFIG.RADIUS + this.minSurfaceClearance;
-    this.maxRadialDistance = 10.0;
+    this.minLunarDistance = MOON_CONFIG.RADIUS + this.minSurfaceClearance;
+    this.maxLunarDistance = 10.0;
+
+    const cislunarDist = EARTH_CONFIG.CISLUNAR_DISTANCE;
+    this.cislunarTarget = new THREE.Vector3(-cislunarDist * 0.5, 0, 0);
+    this.cislunarCameraOffset = new THREE.Vector3(
+      cislunarDist * 0.25,
+      cislunarDist * 0.42,
+      cislunarDist * 1.75
+    );
+    this.minCislunarDistance = Math.max(8.0, cislunarDist * 0.6);
+    this.maxCislunarDistance = Math.max(45.0, cislunarDist * 4.5);
+
+    this.minRadialDistance = this.minLunarDistance;
+    this.maxRadialDistance = this.maxLunarDistance;
 
     this.targetRadialDistance = this.camera.position.length();
+    this._desiredTarget = new THREE.Vector3(0, 0, 0);
+    this._savedLunarCamera = null;
     this.onUpdateCallback = null;
+    this.onViewModeChangeCallback = null;
     this._flyAnim = null;
+
+    this._tmpOffset = new THREE.Vector3();
 
     this.setupSmoothAltitudeZoom();
     this.renderer.domElement.addEventListener('pointerdown', () => {
       this._flyAnim = null;
     });
     window.addEventListener('resize', this.onResize.bind(this));
+  }
+
+  onViewModeChange(callback) {
+    this.onViewModeChangeCallback = callback;
+  }
+
+  _normalizeViewMode(mode) {
+    return mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
+      ? VIEW_MODES.CISLUNAR
+      : VIEW_MODES.LUNAR;
+  }
+
+  setViewMode(mode, { animate = true } = {}) {
+    const nextMode = this._normalizeViewMode(mode);
+    const prevMode = this.viewMode;
+
+    if (prevMode === VIEW_MODES.LUNAR && nextMode === VIEW_MODES.CISLUNAR) {
+      const distFromOrigin = this.camera.position.length();
+      const dir =
+        distFromOrigin > 0.0001
+          ? this.camera.position.clone().divideScalar(distFromOrigin)
+          : new THREE.Vector3(1, 0, 0);
+      this._savedLunarCamera = {
+        direction: dir,
+        distance: THREE.MathUtils.clamp(
+          this.targetRadialDistance,
+          this.minLunarDistance,
+          this.maxLunarDistance
+        ),
+      };
+    }
+
+    this.viewMode = nextMode;
+
+    const currentTarget = this.controls.target.clone();
+    const currentOffset = this.camera.position.clone().sub(currentTarget);
+    const currentDist = Math.max(0.0001, currentOffset.length());
+    const currentDir = currentOffset.divideScalar(currentDist);
+
+    if (nextMode === VIEW_MODES.CISLUNAR) {
+      this.minRadialDistance = this.minCislunarDistance;
+      this.maxRadialDistance = this.maxCislunarDistance;
+      this._desiredTarget.copy(this.cislunarTarget);
+
+      const endOffset = this.cislunarCameraOffset.clone();
+      const endDist = endOffset.length();
+      const endDir = endOffset.clone().divideScalar(endDist);
+      this.targetRadialDistance = endDist;
+
+      if (animate) {
+        this._flyAnim = {
+          startTarget: currentTarget,
+          targetPoint: this.cislunarTarget.clone(),
+          startDir: currentDir,
+          targetDir: endDir,
+          startDist: currentDist,
+          targetDist: endDist,
+          startTime: performance.now(),
+          durationMs: 900,
+        };
+      } else {
+        this._flyAnim = null;
+        this.controls.target.copy(this.cislunarTarget);
+        this.camera.position.copy(this.cislunarTarget).add(endOffset);
+      }
+    } else {
+      this.minRadialDistance = this.minLunarDistance;
+      this.maxRadialDistance = this.maxLunarDistance;
+      this._desiredTarget.set(0, 0, 0);
+
+      const lunarDir = this._savedLunarCamera?.direction?.clone() || new THREE.Vector3(1, 0, 0);
+      const lunarDist = THREE.MathUtils.clamp(
+        this._savedLunarCamera?.distance ?? this.initialDistance,
+        this.minLunarDistance,
+        this.maxLunarDistance
+      );
+      this.targetRadialDistance = lunarDist;
+
+      if (animate) {
+        this._flyAnim = {
+          startTarget: currentTarget,
+          targetPoint: new THREE.Vector3(0, 0, 0),
+          startDir: currentDir,
+          targetDir: lunarDir,
+          startDist: currentDist,
+          targetDist: lunarDist,
+          startTime: performance.now(),
+          durationMs: 900,
+        };
+      } else {
+        this._flyAnim = null;
+        this.controls.target.set(0, 0, 0);
+        this.camera.position.copy(lunarDir).multiplyScalar(lunarDist);
+      }
+    }
+
+    this.controls.enableDamping = false;
+    this.controls.update();
+    this.controls.enableDamping = true;
+    return this.viewMode;
   }
 
   setupSmoothAltitudeZoom() {
@@ -55,17 +174,22 @@ export class SceneManager {
         event.preventDefault();
         this._flyAnim = null;
 
-        const currentAltitude = Math.max(
-          this.minSurfaceClearance,
-          this.targetRadialDistance - MOON_CONFIG.RADIUS
-        );
-
         const delta = THREE.MathUtils.clamp(event.deltaY, -100, 100);
         const zoomSensitivity = 0.0014;
-        const altitudeDelta = currentAltitude * delta * zoomSensitivity;
+
+        let distanceDelta;
+        if (this.viewMode === VIEW_MODES.CISLUNAR) {
+          distanceDelta = this.targetRadialDistance * delta * zoomSensitivity;
+        } else {
+          const currentAltitude = Math.max(
+            this.minSurfaceClearance,
+            this.targetRadialDistance - MOON_CONFIG.RADIUS
+          );
+          distanceDelta = currentAltitude * delta * zoomSensitivity;
+        }
 
         this.targetRadialDistance = THREE.MathUtils.clamp(
-          this.targetRadialDistance + altitudeDelta,
+          this.targetRadialDistance + distanceDelta,
           this.minRadialDistance,
           this.maxRadialDistance
         );
@@ -81,10 +205,24 @@ export class SceneManager {
   }
 
   resetView() {
+    if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      this.setViewMode(VIEW_MODES.CISLUNAR, { animate: true });
+      return;
+    }
     this.flyToCoordinates(0, 0, 1.0);
   }
 
   flyToCoordinates(latDeg, lonDeg, targetZoom = 65) {
+    if (this.viewMode !== VIEW_MODES.LUNAR) {
+      this.viewMode = VIEW_MODES.LUNAR;
+      this.minRadialDistance = this.minLunarDistance;
+      this.maxRadialDistance = this.maxLunarDistance;
+      this._desiredTarget.set(0, 0, 0);
+      if (this.onViewModeChangeCallback) {
+        this.onViewModeChangeCallback(VIEW_MODES.LUNAR);
+      }
+    }
+
     const latRad = THREE.MathUtils.degToRad(latDeg);
     const lonRad = THREE.MathUtils.degToRad(lonDeg);
 
@@ -97,55 +235,82 @@ export class SceneManager {
     const targetAltitude = THREE.MathUtils.clamp(
       this.referenceAltitude / targetZoom,
       this.minSurfaceClearance,
-      this.maxRadialDistance - MOON_CONFIG.RADIUS
+      this.maxLunarDistance - MOON_CONFIG.RADIUS
     );
 
-    const startDir = this.camera.position.clone().normalize();
-    this.targetRadialDistance = MOON_CONFIG.RADIUS + targetAltitude;
+    const currentTarget = this.controls.target.clone();
+    const currentOffset = this.camera.position.clone().sub(currentTarget);
+    const currentDist = Math.max(0.0001, currentOffset.length());
+    const startDir = currentOffset.divideScalar(currentDist);
+
+    const targetDist = MOON_CONFIG.RADIUS + targetAltitude;
+    this.targetRadialDistance = targetDist;
+
     this._flyAnim = {
+      startTarget: currentTarget,
+      targetPoint: new THREE.Vector3(0, 0, 0),
       startDir,
       targetDir,
+      startDist: currentDist,
+      targetDist,
       startTime: performance.now(),
       durationMs: 750,
     };
-    this.controls.target.set(0, 0, 0);
     this.controls.enableDamping = false;
     this.controls.update();
     this.controls.enableDamping = true;
   }
 
+  _interpolateDirection(startDir, targetDir, ease) {
+    const dot = THREE.MathUtils.clamp(startDir.dot(targetDir), -1, 1);
+    if (dot < -0.999) {
+      const ref = Math.abs(startDir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      const axis = new THREE.Vector3().crossVectors(startDir, ref).normalize();
+      return startDir.clone().applyAxisAngle(axis, Math.PI * ease);
+    }
+    return startDir.clone().lerp(targetDir, ease).normalize();
+  }
+
   updateNavigationDynamics() {
-    const currentDist = this.camera.position.length();
+    if (this._flyAnim) {
+      const elapsed = performance.now() - this._flyAnim.startTime;
+      const t = THREE.MathUtils.clamp(elapsed / this._flyAnim.durationMs, 0, 1);
+      const ease = 1 - Math.pow(1 - t, 3);
 
-    const smoothedDist = THREE.MathUtils.lerp(currentDist, this.targetRadialDistance, 0.14);
-    if (currentDist > 0.0001) {
-      if (this._flyAnim) {
-        const elapsed = performance.now() - this._flyAnim.startTime;
-        const t = THREE.MathUtils.clamp(elapsed / this._flyAnim.durationMs, 0, 1);
-        const ease = 1 - Math.pow(1 - t, 3);
+      const { startTarget, targetPoint, startDir, targetDir, startDist, targetDist } = this._flyAnim;
+      this.controls.target.copy(startTarget).lerp(targetPoint, ease);
 
-        const { startDir, targetDir } = this._flyAnim;
-        const dot = THREE.MathUtils.clamp(startDir.dot(targetDir), -1, 1);
-        let interpDir;
-        if (dot < -0.999) {
-          const ref = Math.abs(startDir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-          const axis = new THREE.Vector3().crossVectors(startDir, ref).normalize();
-          interpDir = startDir.clone().applyAxisAngle(axis, Math.PI * ease);
-        } else {
-          interpDir = startDir.clone().lerp(targetDir, ease).normalize();
-        }
-        this.camera.position.copy(interpDir);
-        if (t >= 1) this._flyAnim = null;
+      const interpDir = this._interpolateDirection(startDir, targetDir, ease);
+      const interpDist = THREE.MathUtils.lerp(startDist, targetDist, ease);
+      this.camera.position.copy(this.controls.target).addScaledVector(interpDir, interpDist);
+
+      if (t >= 1) {
+        this.controls.target.copy(targetPoint);
+        this._flyAnim = null;
       }
-      this.camera.position.setLength(smoothedDist);
+    } else {
+      if (this.controls.target.distanceToSquared(this._desiredTarget) > 1e-10) {
+        this.controls.target.lerp(this._desiredTarget, 0.14);
+      } else {
+        this.controls.target.copy(this._desiredTarget);
+      }
+
+      this._tmpOffset.copy(this.camera.position).sub(this.controls.target);
+      const currentDist = this._tmpOffset.length();
+      if (currentDist > 0.00001) {
+        const smoothedDist = THREE.MathUtils.lerp(currentDist, this.targetRadialDistance, 0.14);
+        this._tmpOffset.divideScalar(currentDist).multiplyScalar(smoothedDist);
+        this.camera.position.copy(this.controls.target).add(this._tmpOffset);
+      }
     }
 
-    this.controls.target.set(0, 0, 0);
-
-    const altitude = Math.max(0.00003, smoothedDist - MOON_CONFIG.RADIUS);
-    const angularScale = THREE.MathUtils.clamp(altitude * 0.38, 0.00012, 0.4);
-
-    this.controls.rotateSpeed = angularScale;
+    if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      this.controls.rotateSpeed = 0.55;
+    } else {
+      const lunarDist = this.camera.position.length();
+      const altitude = Math.max(0.00003, lunarDist - MOON_CONFIG.RADIUS);
+      this.controls.rotateSpeed = THREE.MathUtils.clamp(altitude * 0.38, 0.00012, 0.4);
+    }
   }
 
   getCameraTelemetry() {

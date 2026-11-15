@@ -1,0 +1,309 @@
+.bottom-hud-dock {
+  position: fixed;
+  left: var(--left-dock-width, 376px);
+  right: 0;
+  bottom: 0;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+  transition: left 0.2s ease;
+}
+
+.bottom-hud-dock.left-collapsed {
+  left: 46px;
+}
+
+.bottom-top-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 0 14px 6px 0;
+  gap: 12px;
+}
+
+.bottom-telemetry-strip {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: stretch;
+  background: rgba(20, 24, 31, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: none;
+  border-bottom: none;
+  border-top-right-radius: 5px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  max-width: calc(100vw - var(--left-dock-width, 376px) - 180px);
+}
+
+.bts-status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
+  color: #7ee787;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.bts-status-icon.loading {
+  color: #ffd166;
+}
+
+.bts-cells {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 5px 14px;
+  overflow: hidden;
+}
+
+.bts-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 68px;
+}
+
+.bts-label {
+  font-size: 9px;
+  letter-spacing: 0.7px;
+  color: #7f8c9b;
+  text-transform: uppercase;
+}
+
+.bts-value {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #e6edf3;
+  white-space: nowrap;
+}
+
+.bts-actions {
+  display: flex;
+  align-items: center;
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.bts-icon-btn {
+  height: 100%;
+  min-width: 34px;
+  padding: 0 9px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  color: #9fb3c8;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.bts-icon-btn:last-child {
+  border-right: none;
+}
+
+.bts-icon-btn:hover {
+  background: rgba(79, 195, 247, 0.14);
+  color: #ffffff;
+}
+
+.bts-icon-btn.active {
+  background: rgba(79, 195, 247, 0.2);
+  color: #4fc3f7;
+}
+
+/* Scale bar docked cleanly above timeline on the right */
+#scale-bar-container {
+  pointer-events: none;
+  background: rgba(18, 22, 29, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  padding: 5px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-left: auto;
+}
+
+.scale-label {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #e6edf3;
+  margin-bottom: 3px;
+}
+
+.scale-line {
+  width: 110px;
+  height: 5px;
+  border-left: 2px solid #cbd5e1;
+  border-right: 2px solid #cbd5e1;
+  border-bottom: 2px solid #cbd5e1;
+}
+
+/* Timeline Bar */
+.timeline-bar {
+  pointer-events: auto;
+  height: 64px;
+  display: flex;
+  align-items: stretch;
+  background: rgba(20, 24, 31, 0.94);
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  user-select: none;
+}
+
+.timeline-controls-box {
+  width: 224px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(16, 20, 26, 0.95);
+}
+
+.timeline-transport-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.timeline-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.tl-btn {
+  height: 24px;
+  min-width: 24px;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: rgba(34, 42, 54, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #d8e6f3;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.tl-btn:hover {
+  background: rgba(52, 66, 86, 0.95);
+  border-color: rgba(79, 195, 247, 0.55);
+  color: #ffffff;
+}
+
+.tl-btn.playing {
+  background: rgba(79, 195, 247, 0.22);
+  border-color: #4fc3f7;
+  color: #4fc3f7;
+}
+
+.tl-speed-btn {
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 700;
+  font-size: 10.5px;
+  min-width: 44px;
+}
+
+.tl-now-btn {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #81d4fa;
+}
+
+.timeline-date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  position: relative;
+}
+
+.timeline-utc-readout {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.timeline-utc-readout:hover {
+  background: rgba(79, 195, 247, 0.14);
+  color: #ffffff;
+}
+
+.timeline-hidden-picker {
+  position: absolute;
+  left: 0;
+  bottom: 26px;
+  z-index: 40;
+  background: #141a24;
+  color: #e3f2fd;
+  border: 1px solid #4fc3f7;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11.5px;
+  display: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.85);
+}
+
+.timeline-hidden-picker.open {
+  display: block;
+}
+
+.timeline-track-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  cursor: grab;
+  overflow: hidden;
+  background: rgba(24, 29, 37, 0.92);
+}
+
+.timeline-track-wrap.dragging {
+  cursor: grabbing;
+}
+
+.timeline-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.timeline-zoom-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  font-size: 9.5px;
+  color: rgba(159, 179, 200, 0.65);
+  pointer-events: none;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+@media (max-width: 1024px) {
+  .bts-cell:nth-child(n + 4) {
+    display: none;
+  }
+  .timeline-controls-box {
+    width: 196px;
+  }
+}

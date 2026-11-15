@@ -7,6 +7,37 @@ export const MOON_CONFIG = {
   HORIZON_THRESHOLD: 0.0045,
 };
 
+export const EARTH_CONFIG = {
+  RADIUS_KM: 6371.0,
+  RADIUS_RATIO: 6371.0 / MOON_CONFIG.RADIUS_KM, // ≈ 3.667
+  RADIUS: MOON_CONFIG.RADIUS * (6371.0 / MOON_CONFIG.RADIUS_KM),
+  AXIAL_TILT_DEG: 23.44,
+  SEGMENTS: 96,
+  ATMO_SCALE: 1.03,
+  CLOUD_SCALE: 1.007,
+  CISLUNAR_DISTANCE: 15 * MOON_CONFIG.RADIUS,
+  DAY_LOCAL_URL: '/earth/earth_day_4096.jpg',
+  DAY_REMOTE_URL:
+    'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_day_4096.jpg',
+  NIGHT_LOCAL_URL: '/earth/earth_night_4096.jpg',
+  NIGHT_REMOTE_URL:
+    'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_night_4096.jpg',
+  NORMAL_LOCAL_URL: '/earth/earth_normal_2048.jpg',
+  NORMAL_REMOTE_URL:
+    'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg',
+  SPECULAR_LOCAL_URL: '/earth/earth_specular_2048.jpg',
+  SPECULAR_REMOTE_URL:
+    'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg',
+  CLOUDS_LOCAL_URL: '/earth/earth_clouds_1024.png',
+  CLOUDS_REMOTE_URL:
+    'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png',
+};
+
+export const VIEW_MODES = {
+  LUNAR: 'LUNAR',
+  CISLUNAR: 'CISLUNAR',
+};
+
 export const LOD_CONFIG = {
   MIN_ZOOM: 2,
   MAX_ZOOM: 12,
@@ -18,6 +49,7 @@ export const LOD_CONFIG = {
   SPLIT_THRESHOLD: 3.0,
   EDGE_SPLIT_ATTENUATION: 0.4,
   STALE_INFLIGHT_FRAMES: 3,
+  HIGH_LOD_MAX_CAMERA_DISTANCE: 3 * MOON_CONFIG.RADIUS,
 };
 
 export const OVERLAY_CONFIG = {
@@ -97,8 +129,8 @@ export const MAP_LAYERS = {
 
 export const CELESTIAL_CONFIG = {
   EARTH_DISTANCE: 221.2,
-  EARTH_RADIUS: 3.667,
-  EARTH_AXIAL_TILT_DEG: 23.44,
+  EARTH_RADIUS: EARTH_CONFIG.RADIUS,
+  EARTH_AXIAL_TILT_DEG: EARTH_CONFIG.AXIAL_TILT_DEG,
   SUN_DISTANCE: 420.0,
   SUN_RADIUS: 4.2,
   SOLAR_CONSTANT_WM2: 1361.0,

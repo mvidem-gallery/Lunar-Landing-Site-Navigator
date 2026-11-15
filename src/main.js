@@ -14,7 +14,7 @@ import { RulerTool } from './interaction/rulerTool.js';
 import { LandingSitesMenu } from './interaction/landingSitesMenu.js';
 import { MissionPanel } from './interaction/missionPanel.js';
 import { TimelineController } from './interaction/timelineController.js';
-import { MAP_LAYERS } from './config/constants.js';
+import { MAP_LAYERS, VIEW_MODES } from './config/constants.js';
 
 async function bootstrap() {
   const statusEl = document.getElementById('solar-status');
@@ -37,6 +37,31 @@ async function bootstrap() {
 
     const { baseMesh, uniforms, lodManager } = moonGroup.userData || {};
     const overlayManager = new VisualOverlayManager(uniforms, lightingSystem, moonGroup);
+
+    function setViewMode(mode, options = {}) {
+      const normalized =
+        mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
+          ? VIEW_MODES.CISLUNAR
+          : VIEW_MODES.LUNAR;
+      celestialEnv.setViewMode(normalized);
+      if (lodManager) {
+        lodManager.setViewMode(normalized);
+      }
+      sceneManager.setViewMode(normalized, options);
+      uiController.setViewModeUI(normalized);
+    }
+
+    sceneManager.onViewModeChange((mode) => {
+      celestialEnv.setViewMode(mode);
+      if (lodManager) {
+        lodManager.setViewMode(mode);
+      }
+      uiController.setViewModeUI(mode);
+    });
+
+    uiController.onViewModeChange((mode) => {
+      setViewMode(mode);
+    });
 
     let latestHoverData = null;
     let latestEphemData = null;
@@ -285,11 +310,11 @@ async function bootstrap() {
       raycastController.update();
       uiController.updateCompass(camera, currentSunDir);
 
-      const altitudeUnits = Math.max(0.001, camera.position.length() - 1.0);
+      const altitudeUnits = Math.max(0.00002, camera.position.length() - 1.0);
       overlayManager.updateAdaptiveGrid(altitudeUnits);
-      overlayManager.updateGridLabels(camera);
 
       const actualMaxZoom = lodManager ? lodManager.update(camera) : 2;
+      overlayManager.updateGridLabels(camera, lodManager);
       const pendingCount = lodManager ? lodManager.cache.pendingCount : 0;
 
       uiController.updateCameraZoom({

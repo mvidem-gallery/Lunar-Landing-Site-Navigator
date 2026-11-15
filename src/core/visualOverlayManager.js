@@ -103,17 +103,30 @@ export class VisualOverlayManager {
     } else if (altitudeUnits > 0.015) {
       this.uniforms.uGridStepDeg.value = 1.0;
       this.uniforms.uGridSubStepDeg.value = 0.25;
-    } else {
+    } else if (altitudeUnits > 0.003) {
       this.uniforms.uGridStepDeg.value = 0.25;
       this.uniforms.uGridSubStepDeg.value = 0.05;
+    } else if (altitudeUnits > 0.0006) {
+      this.uniforms.uGridStepDeg.value = 0.05;
+      this.uniforms.uGridSubStepDeg.value = 0.01;
+    } else if (altitudeUnits > 0.00012) {
+      this.uniforms.uGridStepDeg.value = 0.01;
+      this.uniforms.uGridSubStepDeg.value = 0.002;
+    } else if (altitudeUnits > 0.000035) {
+      this.uniforms.uGridStepDeg.value = 0.002;
+      this.uniforms.uGridSubStepDeg.value = 0.0005;
+    } else {
+      this.uniforms.uGridStepDeg.value = 0.0005;
+      this.uniforms.uGridSubStepDeg.value = 0.0001;
     }
   }
 
   formatSingleCoord(deg, isLat, stepDeg) {
-    const decimals = stepDeg < 0.5 ? 2 : stepDeg < 1.0 ? 1 : 0;
+    const decimals =
+      stepDeg < 0.001 ? 4 : stepDeg < 0.01 ? 3 : stepDeg < 0.5 ? 2 : stepDeg < 1.0 ? 1 : 0;
     const absVal = Math.abs(deg);
 
-    if (absVal < 1e-4) {
+    if (absVal < 1e-6) {
       return isLat ? '0°EQ' : '0°PM';
     }
 
@@ -131,7 +144,7 @@ export class VisualOverlayManager {
   }
 
   getLabelTexture(text, isAxis) {
-    const cacheKey = `hud_br_${text}_${isAxis ? '1' : '0'}`;
+    const cacheKey = `hud_bl_${text}_${isAxis ? '1' : '0'}`;
     if (this.textureCache.has(cacheKey)) {
       return this.textureCache.get(cacheKey);
     }
@@ -149,16 +162,16 @@ export class VisualOverlayManager {
     ctx.strokeStyle = accentColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(canvas.width - 22, canvas.height - 4);
-    ctx.lineTo(canvas.width - 4, canvas.height - 4);
-    ctx.lineTo(canvas.width - 4, canvas.height - 22);
+    ctx.moveTo(4, canvas.height - 22);
+    ctx.lineTo(4, canvas.height - 4);
+    ctx.lineTo(22, canvas.height - 4);
     ctx.stroke();
 
     ctx.font = '400 32px "Rajdhani", "Segoe UI", "Roboto", sans-serif';
     if ('letterSpacing' in ctx) {
       ctx.letterSpacing = '3.5px';
     }
-    ctx.textAlign = 'right';
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
 
     ctx.shadowColor = 'rgba(2, 6, 14, 0.95)';
@@ -167,7 +180,7 @@ export class VisualOverlayManager {
     ctx.shadowOffsetY = 1;
 
     ctx.fillStyle = primaryColor;
-    ctx.fillText(text, canvas.width - 14, canvas.height - 8);
+    ctx.fillText(text, 14, canvas.height - 8);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -196,11 +209,14 @@ export class VisualOverlayManager {
       depthTest: true,
       side: THREE.FrontSide,
       opacity: 0.96,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -64,
     });
 
     const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
     mesh.rotation.y = Math.PI;
-    mesh.renderOrder = 5;
+    mesh.renderOrder = 10;
     this.gridLabelsGroup.add(mesh);
     this.meshPool.push(mesh);
     return mesh;
@@ -223,8 +239,33 @@ export class VisualOverlayManager {
     return outVec;
   }
 
-  placeCellCornerLabel(text, cellMinLatDeg, cellMinLonDeg, stepDeg, isAxis, camDir, horizonCos) {
-    const patchRadius = MOON_CONFIG.RADIUS + 0.00045;
+  _getSurfaceClearance(stepDeg) {
+    if (stepDeg >= 15.0) return 0.00015;
+    if (stepDeg >= 5.0) return 0.00006;
+    if (stepDeg >= 1.0) return 0.000018;
+    if (stepDeg >= 0.25) return 0.000004;
+    if (stepDeg >= 0.05) return 0.000001;
+    if (stepDeg >= 0.01) return 0.00000025;
+    return 0.0000002;
+  }
+
+  _getPatchSegments(stepDeg) {
+    if (stepDeg >= 5.0) return [16, 4];
+    if (stepDeg >= 0.25) return [8, 3];
+    if (stepDeg >= 0.05) return [4, 2];
+    return [2, 1];
+  }
+
+  placeCellCornerLabel(
+    text,
+    cellMinLatDeg,
+    cellMinLonDeg,
+    stepDeg,
+    isAxis,
+    camDir,
+    horizonCos,
+    lodManager = null
+  ) {
     const marginDeg = stepDeg * 0.025;
 
     const aspect = 640 / 96;
@@ -236,9 +277,19 @@ export class VisualOverlayManager {
     const patchLonSpanDeg = (patchLatSpanDeg * aspect) / cosMidLat;
 
     const startLatDeg = cellMinLatDeg + marginDeg;
-    const startLonDeg = cellMinLonDeg + stepDeg - marginDeg - patchLonSpanDeg;
+    const startLonDeg = cellMinLonDeg + marginDeg;
 
     if (startLatDeg + patchLatSpanDeg > 87.5 || startLatDeg < -87.5) return;
+
+    const surfaceOffset = lodManager
+      ? lodManager.getSurfaceOffsetForBounds(
+          startLatDeg,
+          startLatDeg + patchLatSpanDeg,
+          startLonDeg,
+          startLonDeg + patchLonSpanDeg
+        )
+      : 0;
+    const patchRadius = MOON_CONFIG.RADIUS + surfaceOffset + this._getSurfaceClearance(stepDeg);
 
     const midLatDeg = startLatDeg + patchLatSpanDeg * 0.5;
     const midLonDeg = startLonDeg + patchLonSpanDeg * 0.5;
@@ -248,7 +299,10 @@ export class VisualOverlayManager {
     if (this._cellNormal.dot(camDir) <= horizonCos - 0.05) return;
 
     this._boundingSphere.center.copy(this._cellNormal).multiplyScalar(patchRadius);
-    this._boundingSphere.radius = THREE.MathUtils.degToRad(patchLonSpanDeg * cosMidLat) * 0.6;
+    this._boundingSphere.radius = Math.max(
+      0.00002,
+      THREE.MathUtils.degToRad(patchLonSpanDeg * cosMidLat) * 0.6
+    );
     if (!this._frustum.intersectsSphere(this._boundingSphere)) return;
 
     const normalizedLonDeg = ((startLonDeg % 360) + 360) % 360;
@@ -256,16 +310,17 @@ export class VisualOverlayManager {
     const phiLength = THREE.MathUtils.degToRad(patchLonSpanDeg);
     const thetaStart = THREE.MathUtils.degToRad(90.0 - (startLatDeg + patchLatSpanDeg));
     const thetaLength = THREE.MathUtils.degToRad(patchLatSpanDeg);
+    const [segsW, segsH] = this._getPatchSegments(stepDeg);
 
     const mesh = this.getPooledMesh(this.activeMeshCount++);
-    const key = `${phiStart.toFixed(5)}_${phiLength.toFixed(5)}_${thetaStart.toFixed(5)}_${thetaLength.toFixed(5)}`;
+    const key = `${patchRadius.toFixed(9)}_${segsW}_${segsH}_${phiStart.toFixed(10)}_${phiLength.toFixed(10)}_${thetaStart.toFixed(10)}_${thetaLength.toFixed(10)}`;
 
     if (mesh.userData.geomKey !== key) {
       if (mesh.geometry) mesh.geometry.dispose();
       mesh.geometry = new THREE.SphereGeometry(
         patchRadius,
-        8,
-        3,
+        segsW,
+        segsH,
         phiStart,
         phiLength,
         thetaStart,
@@ -279,7 +334,7 @@ export class VisualOverlayManager {
     mesh.visible = true;
   }
 
-  updateGridLabels(camera) {
+  updateGridLabels(camera, lodManager = null) {
     if (!this.uniforms.uShowCoordGrid.value) {
       this.hideUnusedMeshes(0);
       return;
@@ -298,35 +353,38 @@ export class VisualOverlayManager {
     const centerLat = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(this._camDir.y, -1, 1)));
     const centerLon = THREE.MathUtils.radToDeg(Math.atan2(-this._camDir.z, this._camDir.x));
 
-    const altitude = Math.max(0.001, camDist - MOON_CONFIG.RADIUS);
+    const altitude = Math.max(0.00002, camDist - MOON_CONFIG.RADIUS);
     const viewHalfAngleDeg = Math.min(85, THREE.MathUtils.radToDeg(Math.acos(horizonCos)) + 8);
-    const localSpanDeg = Math.min(85, THREE.MathUtils.radToDeg(Math.atan((altitude * 1.6) / MOON_CONFIG.RADIUS)) * 1.45);
+    const localSpanDeg = Math.min(
+      85,
+      THREE.MathUtils.radToDeg(Math.atan((altitude * 1.6) / MOON_CONFIG.RADIUS)) * 1.45
+    );
     const searchRadiusDeg = Math.min(viewHalfAngleDeg, Math.max(stepDeg * 2.5, localSpanDeg));
 
     this.activeMeshCount = 0;
 
     const minLat = Math.max(-90 + stepDeg, Math.floor((centerLat - searchRadiusDeg) / stepDeg) * stepDeg);
     const maxLat = Math.min(90 - stepDeg * 2, Math.ceil((centerLat + searchRadiusDeg) / stepDeg) * stepDeg);
+    const loopEps = stepDeg * 1e-3;
 
-    for (let lat = minLat; lat <= maxLat + 1e-6; lat += stepDeg) {
-      const cleanLat = Math.round(lat * 1000) / 1000;
-      const isEquator = Math.abs(cleanLat) < 1e-4;
+    for (let lat = minLat; lat <= maxLat + loopEps; lat += stepDeg) {
+      const cleanLat = Math.round(lat * 1e6) / 1e6;
+      const isEquator = Math.abs(cleanLat) < 1e-6;
 
       const rowCosLat = Math.max(0.18, Math.cos(THREE.MathUtils.degToRad(cleanLat + stepDeg * 0.5)));
       const rowLonSpan = Math.min(180, searchRadiusDeg / rowCosLat);
       const minLon = Math.floor((centerLon - rowLonSpan) / stepDeg) * stepDeg;
       const maxLon = Math.ceil((centerLon + rowLonSpan) / stepDeg) * stepDeg;
 
-      for (let lon = minLon; lon <= maxLon + 1e-6; lon += stepDeg) {
-        const cleanLon = Math.round(lon * 1000) / 1000;
+      for (let lon = minLon; lon <= maxLon + loopEps; lon += stepDeg) {
+        const cleanLon = Math.round(lon * 1e6) / 1e6;
 
-        // Координата відповідає правому нижньому куту комірки (cleanLon + stepDeg, cleanLat)
-        const rightCornerLon = Math.round((cleanLon + stepDeg) * 1000) / 1000;
-        let wrappedLon = ((rightCornerLon + 180) % 360 + 360) % 360 - 180;
-        if (Math.abs(wrappedLon + 180) < 1e-4) wrappedLon = 180;
+        // Координата відповідає лівому нижньому куту комірки (cleanLon, cleanLat)
+        let wrappedLon = ((cleanLon + 180) % 360 + 360) % 360 - 180;
+        if (Math.abs(wrappedLon + 180) < 1e-6) wrappedLon = 180;
 
         const isAxisMeridian =
-          Math.abs(wrappedLon) < 1e-4 || Math.abs(Math.abs(wrappedLon) - 180) < 1e-4;
+          Math.abs(wrappedLon) < 1e-6 || Math.abs(Math.abs(wrappedLon) - 180) < 1e-6;
         const labelText = this.formatCellLabel(cleanLat, wrappedLon, stepDeg);
 
         this.placeCellCornerLabel(
@@ -336,7 +394,8 @@ export class VisualOverlayManager {
           stepDeg,
           isEquator || isAxisMeridian,
           this._camDir,
-          horizonCos
+          horizonCos,
+          lodManager
         );
       }
     }
