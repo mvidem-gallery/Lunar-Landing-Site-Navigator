@@ -26,12 +26,12 @@
   pointer-events: auto;
   display: inline-flex;
   align-items: stretch;
-  background: rgba(20, 24, 31, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(16, 20, 28, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-left: none;
   border-bottom: none;
   border-top-right-radius: 5px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(12px);
   box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   max-width: calc(100vw - var(--left-dock-width, 376px) - 180px);
@@ -122,8 +122,9 @@
 /* Scale bar docked cleanly above timeline on the right */
 #scale-bar-container {
   pointer-events: none;
-  background: rgba(18, 22, 29, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(16, 20, 28, 0.52);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 4px;
   padding: 5px 10px;
   display: flex;
@@ -154,9 +155,9 @@
   height: 64px;
   display: flex;
   align-items: stretch;
-  background: rgba(20, 24, 31, 0.94);
-  border-top: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(10px);
+  background: rgba(16, 20, 28, 0.56);
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(14px);
   user-select: none;
 }
 
@@ -168,7 +169,7 @@
   justify-content: space-between;
   padding: 6px 10px;
   border-right: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(16, 20, 26, 0.95);
+  background: rgba(14, 18, 25, 0.46);
 }
 
 .timeline-transport-row {
@@ -189,7 +190,7 @@
   min-width: 24px;
   padding: 0 6px;
   border-radius: 3px;
-  background: rgba(34, 42, 54, 0.9);
+  background: rgba(26, 34, 46, 0.52);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: #d8e6f3;
   font-size: 11px;
@@ -201,7 +202,7 @@
 }
 
 .tl-btn:hover {
-  background: rgba(52, 66, 86, 0.95);
+  background: rgba(52, 66, 86, 0.72);
   border-color: rgba(79, 195, 247, 0.55);
   color: #ffffff;
 }
@@ -281,7 +282,7 @@
   min-width: 0;
   cursor: grab;
   overflow: hidden;
-  background: rgba(24, 29, 37, 0.92);
+  background: rgba(16, 21, 29, 0.38);
 }
 
 .timeline-track-wrap.dragging {

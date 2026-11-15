@@ -22,7 +22,8 @@
   z-index: 25;
   display: none;
   padding: 12px 14px;
-  background: rgba(14, 21, 33, 0.9);
+  background: rgba(14, 21, 33, 0.58);
+  backdrop-filter: blur(12px);
   border: 1px solid rgba(79, 195, 247, 0.25);
   border-radius: 6px;
 }
@@ -70,7 +71,7 @@
   font-size: 11px;
   font-weight: bold;
   text-align: center;
-  background: rgba(18, 28, 44, 0.85);
+  background: rgba(16, 24, 38, 0.46);
   border: 1px solid rgba(79, 195, 247, 0.25);
   border-radius: 4px;
   color: #9fb3c8;
@@ -84,7 +85,7 @@
 }
 
 .ls-tab-btn.active {
-  background: rgba(34, 72, 102, 0.9);
+  background: rgba(34, 72, 102, 0.66);
   border-color: #4fc3f7;
   color: #e1f5fe;
 }
@@ -139,7 +140,7 @@
   padding: 3px 8px;
   font-size: 10.5px;
   border-radius: 3px;
-  background: rgba(18, 28, 44, 0.78);
+  background: rgba(16, 24, 38, 0.44);
   border: 1px solid rgba(79, 195, 247, 0.22);
   color: #9fb3c8;
   cursor: pointer;
@@ -163,7 +164,7 @@
   gap: 6px;
   padding: 8px;
   border-radius: 4px;
-  background: rgba(16, 26, 40, 0.85);
+  background: rgba(14, 22, 35, 0.48);
   border: 1px solid rgba(79, 195, 247, 0.22);
 }
 
@@ -203,7 +204,7 @@
 }
 
 .ls-card {
-  background: rgba(18, 28, 44, 0.78);
+  background: rgba(16, 24, 38, 0.44);
   border: 1px solid rgba(79, 195, 247, 0.2);
   border-radius: 4px;
   padding: 7px 9px;
@@ -215,12 +216,12 @@
 }
 
 .ls-card:hover {
-  background: rgba(27, 43, 66, 0.9);
+  background: rgba(24, 38, 58, 0.62);
   border-color: rgba(79, 195, 247, 0.6);
 }
 
 .ls-card.selected {
-  background: rgba(24, 54, 78, 0.92);
+  background: rgba(22, 50, 74, 0.68);
   border-color: #ffd166;
   box-shadow: 0 0 10px rgba(255, 209, 102, 0.18);
 }
@@ -363,6 +364,6 @@
 
 .landing-pin-label.custom {
   color: #e1f5fe;
-  background: rgba(10, 22, 38, 0.88);
+  background: rgba(10, 22, 38, 0.64);
   border: 1px solid rgba(79, 195, 247, 0.7);
 }

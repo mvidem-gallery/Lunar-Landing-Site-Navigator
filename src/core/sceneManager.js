@@ -43,7 +43,8 @@ export class SceneManager {
     this.viewMode = VIEW_MODES.LUNAR;
     this.minSurfaceClearance = 0.00003;
     this.minLunarDistance = MOON_CONFIG.RADIUS + this.minSurfaceClearance;
-    this.maxLunarDistance = 10.0;
+    this.maxLunarDistance = 7.0;
+    this.maxLunarPanRadius = MOON_CONFIG.RADIUS * 1.4;
 
     this.cislunarDistance = EARTH_CONFIG.CISLUNAR_DISTANCE;
     this.cislunarEarthDir = new THREE.Vector3(1, 0, 0);
@@ -52,12 +53,14 @@ export class SceneManager {
     this._earthCenter = new THREE.Vector3(this.cislunarDistance, 0, 0);
     this.cislunarCameraOffset = new THREE.Vector3();
     this.cislunarFocus = 'SYSTEM';
-    this.minCislunarDistance = Math.max(8.0, this.cislunarDistance * 0.6);
-    this.maxCislunarDistance = Math.max(45.0, this.cislunarDistance * 4.5);
+    this.minCislunarDistance = Math.max(7.5, this.cislunarDistance * 0.5);
+    this.maxCislunarDistance = Math.max(38.0, this.cislunarDistance * 2.6);
     this._updateCislunarFraming();
 
     this.minRadialDistance = this.minLunarDistance;
     this.maxRadialDistance = this.maxLunarDistance;
+    this.controls.minDistance = this.minRadialDistance;
+    this.controls.maxDistance = this.maxRadialDistance;
 
     this.targetRadialDistance = this.camera.position.length();
     this._desiredTarget = new THREE.Vector3(0, 0, 0);
@@ -70,6 +73,7 @@ export class SceneManager {
     this._tmpOffset = new THREE.Vector3();
     this._tmpDeltaTarget = new THREE.Vector3();
     this._tmpCollisionVec = new THREE.Vector3();
+    this._tmpSystemCenter = new THREE.Vector3();
 
     this.setupSmoothAltitudeZoom();
     this.renderer.domElement.addEventListener(
@@ -127,7 +131,7 @@ export class SceneManager {
         .addScaledVector(camUp, rE * 0.95)
         .addScaledVector(earthAxis, -rE * 1.55);
       this.minCislunarDistance = rE + 0.14;
-      this.maxCislunarDistance = Math.max(40.0, this.cislunarDistance * 3.0);
+      this.maxCislunarDistance = Math.max(24.0, this.cislunarDistance * 1.8);
     } else if (this.cislunarFocus === 'MOON') {
       const rM = MOON_CONFIG.RADIUS;
       this.cislunarTarget.copy(this._moonCenter);
@@ -137,7 +141,7 @@ export class SceneManager {
         .addScaledVector(camUp, rM * 0.95)
         .addScaledVector(sideAxis, rM * 2.4);
       this.minCislunarDistance = rM + 0.015;
-      this.maxCislunarDistance = Math.max(30.0, this.cislunarDistance * 2.2);
+      this.maxCislunarDistance = Math.max(16.0, this.cislunarDistance * 1.2);
     } else {
       // Центруємо огляд між Землею та Місяцем
       this.cislunarTarget.copy(this._moonCenter).add(this._earthCenter).multiplyScalar(0.5);
@@ -146,8 +150,8 @@ export class SceneManager {
         .multiplyScalar(-D * 0.25)
         .addScaledVector(camUp, D * 0.42)
         .addScaledVector(sideAxis, D * 1.75);
-      this.minCislunarDistance = Math.max(8.0, this.cislunarDistance * 0.6);
-      this.maxCislunarDistance = Math.max(45.0, this.cislunarDistance * 4.5);
+      this.minCislunarDistance = Math.max(7.5, this.cislunarDistance * 0.5);
+      this.maxCislunarDistance = Math.max(38.0, this.cislunarDistance * 2.6);
     }
   }
 
@@ -181,6 +185,8 @@ export class SceneManager {
     if (this.viewMode === VIEW_MODES.CISLUNAR) {
       this.minRadialDistance = this.minCislunarDistance;
       this.maxRadialDistance = this.maxCislunarDistance;
+      this.controls.minDistance = this.minRadialDistance;
+      this.controls.maxDistance = this.maxRadialDistance;
       this._desiredTarget.copy(this.cislunarTarget);
       this._tmpDeltaTarget.set(
         this._desiredTarget.x - prevTargetX,
@@ -226,6 +232,8 @@ export class SceneManager {
     this._updateCislunarFraming();
     this.minRadialDistance = this.minCislunarDistance;
     this.maxRadialDistance = this.maxCislunarDistance;
+    this.controls.minDistance = this.minRadialDistance;
+    this.controls.maxDistance = this.maxRadialDistance;
     this._desiredTarget.copy(this.cislunarTarget);
 
     const endOffset = this.cislunarCameraOffset.clone();
@@ -297,6 +305,8 @@ export class SceneManager {
       this._updateCislunarFraming();
       this.minRadialDistance = this.minCislunarDistance;
       this.maxRadialDistance = this.maxCislunarDistance;
+      this.controls.minDistance = this.minRadialDistance;
+      this.controls.maxDistance = this.maxRadialDistance;
       this._desiredTarget.copy(this.cislunarTarget);
 
       const endOffset = this.cislunarCameraOffset.clone();
@@ -323,6 +333,8 @@ export class SceneManager {
     } else {
       this.minRadialDistance = this.minLunarDistance;
       this.maxRadialDistance = this.maxLunarDistance;
+      this.controls.minDistance = this.minRadialDistance;
+      this.controls.maxDistance = this.maxRadialDistance;
       this._desiredTarget.set(0, 0, 0);
 
       const lunarDir = this._savedLunarCamera?.direction?.clone() || new THREE.Vector3(1, 0, 0);
@@ -415,6 +427,8 @@ export class SceneManager {
       this.viewMode = VIEW_MODES.LUNAR;
       this.minRadialDistance = this.minLunarDistance;
       this.maxRadialDistance = this.maxLunarDistance;
+      this.controls.minDistance = this.minRadialDistance;
+      this.controls.maxDistance = this.maxRadialDistance;
       this._desiredTarget.set(0, 0, 0);
       if (this.onViewModeChangeCallback) {
         this.onViewModeChangeCallback(VIEW_MODES.LUNAR);
@@ -469,6 +483,60 @@ export class SceneManager {
     return startDir.clone().lerp(targetDir, ease).normalize();
   }
 
+  _clampCameraSpaceBoundaries() {
+    if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      // Обмежуємо панорамування цілі межами земно-місячної системи, щоб не полетіти у відкритий космос
+      this._tmpSystemCenter.copy(this._moonCenter).add(this._earthCenter).multiplyScalar(0.5);
+      const halfSpan = 0.5 * this._earthCenter.distanceTo(this._moonCenter);
+      const maxPanRadius = halfSpan + EARTH_CONFIG.RADIUS + 7.5;
+
+      this._tmpCollisionVec.subVectors(this.controls.target, this._tmpSystemCenter);
+      const targetDist = this._tmpCollisionVec.length();
+      if (targetDist > maxPanRadius && targetDist > 1e-6) {
+        this._tmpCollisionVec.multiplyScalar(maxPanRadius / targetDist);
+        this.controls.target.copy(this._tmpSystemCenter).add(this._tmpCollisionVec);
+      }
+
+      // Обмежуємо максимальне віддалення камери від центру системи Земля–Місяць
+      const maxWorldCamRadius = maxPanRadius + this.maxCislunarDistance;
+      this._tmpCollisionVec.subVectors(this.camera.position, this._tmpSystemCenter);
+      const worldCamDist = this._tmpCollisionVec.length();
+      if (worldCamDist > maxWorldCamRadius && worldCamDist > 1e-6) {
+        this.camera.position
+          .copy(this._tmpSystemCenter)
+          .addScaledVector(this._tmpCollisionVec, maxWorldCamRadius / worldCamDist);
+      }
+
+      // Запобігаємо потраплянню камери всередину Місяця або Землі
+      const minEarthCamDist = EARTH_CONFIG.RADIUS + 0.08;
+      this._tmpCollisionVec.subVectors(this.camera.position, this._earthCenter);
+      const dE = this._tmpCollisionVec.length();
+      if (dE > 1e-6 && dE < minEarthCamDist) {
+        this.camera.position.copy(this._earthCenter).addScaledVector(this._tmpCollisionVec, minEarthCamDist / dE);
+      }
+      const minMoonCamDist = MOON_CONFIG.RADIUS + 0.01;
+      this._tmpCollisionVec.subVectors(this.camera.position, this._moonCenter);
+      const dM = this._tmpCollisionVec.length();
+      if (dM > 1e-6 && dM < minMoonCamDist) {
+        this.camera.position.copy(this._moonCenter).addScaledVector(this._tmpCollisionVec, minMoonCamDist / dM);
+      }
+    } else {
+      // Режим LUNAR: обмежуємо панорамування та орбітальне віддалення навколо Місяця
+      const targetLen = this.controls.target.length();
+      if (targetLen > this.maxLunarPanRadius && targetLen > 1e-6) {
+        this.controls.target.multiplyScalar(this.maxLunarPanRadius / targetLen);
+      }
+
+      const minCamDist = MOON_CONFIG.RADIUS + this.minSurfaceClearance;
+      const d = this.camera.position.length();
+      if (d > 1e-6 && d < minCamDist) {
+        this.camera.position.multiplyScalar(minCamDist / d);
+      } else if (d > this.maxLunarDistance + this.maxLunarPanRadius) {
+        this.camera.position.multiplyScalar((this.maxLunarDistance + this.maxLunarPanRadius) / d);
+      }
+    }
+  }
+
   updateNavigationDynamics() {
     if (this._flyAnim) {
       const elapsed = performance.now() - this._flyAnim.startTime;
@@ -487,6 +555,11 @@ export class SceneManager {
         this._flyAnim = null;
       }
     } else {
+      this.targetRadialDistance = THREE.MathUtils.clamp(
+        this.targetRadialDistance,
+        this.minRadialDistance,
+        this.maxRadialDistance
+      );
       this._tmpOffset.copy(this.camera.position).sub(this.controls.target);
       const currentDist = this._tmpOffset.length();
       if (currentDist > 0.00001) {
@@ -495,27 +568,7 @@ export class SceneManager {
         this.camera.position.copy(this.controls.target).add(this._tmpOffset);
       }
 
-      // Запобігаємо потраплянню камери всередину Місяця або Землі при вільному панорамуванні (Alt + рух)
-      if (this.viewMode === VIEW_MODES.CISLUNAR) {
-        const minEarthCamDist = EARTH_CONFIG.RADIUS + 0.08;
-        this._tmpCollisionVec.subVectors(this.camera.position, this._earthCenter);
-        const dE = this._tmpCollisionVec.length();
-        if (dE > 1e-6 && dE < minEarthCamDist) {
-          this.camera.position.copy(this._earthCenter).addScaledVector(this._tmpCollisionVec, minEarthCamDist / dE);
-        }
-        const minMoonCamDist = MOON_CONFIG.RADIUS + 0.01;
-        this._tmpCollisionVec.subVectors(this.camera.position, this._moonCenter);
-        const dM = this._tmpCollisionVec.length();
-        if (dM > 1e-6 && dM < minMoonCamDist) {
-          this.camera.position.copy(this._moonCenter).addScaledVector(this._tmpCollisionVec, minMoonCamDist / dM);
-        }
-      } else {
-        const minCamDist = MOON_CONFIG.RADIUS + this.minSurfaceClearance;
-        const d = this.camera.position.length();
-        if (d > 1e-6 && d < minCamDist) {
-          this.camera.position.multiplyScalar(minCamDist / d);
-        }
-      }
+      this._clampCameraSpaceBoundaries();
     }
 
     if (this.viewMode === VIEW_MODES.CISLUNAR) {
