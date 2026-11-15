@@ -384,7 +384,7 @@ export class SceneManager {
           startDist: currentDist,
           targetDist: endDist,
           startTime: performance.now(),
-          durationMs: 900,
+          durationMs: 1000,
         };
       } else {
         this._flyAnim = null;

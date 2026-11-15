@@ -207,6 +207,18 @@
   gap: 6px;
 }
 
+.ls-pick-moon-btn {
+  width: 100%;
+  border-color: rgba(0, 149, 255, 0.45);
+  color: #bae6fd;
+}
+
+.ls-pick-moon-btn.picking {
+  background: var(--sx-warn-soft, rgba(245, 158, 11, 0.16));
+  border-color: var(--sx-warn, #f59e0b);
+  color: #fde68a;
+}
+
 .ls-list {
   display: flex;
   flex-direction: column;

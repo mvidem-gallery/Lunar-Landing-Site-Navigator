@@ -16,7 +16,7 @@ const TAB_TITLES = {
   missions: { title: 'Mission', badge: 'MISSION' },
   sites: { title: 'Landing Sites', badge: 'CATALOG' },
   layers: { title: 'Map Layers', badge: 'LAYERS' },
-  ai: { title: 'AI Report', badge: 'DSS · AI' },
+  ai: { title: 'Report', badge: 'DSS' },
 };
 
 const LAYER_DESCRIPTIONS = {
@@ -36,6 +36,7 @@ export class UIController {
     this.leftCollapseBtn = document.getElementById('left-collapse-btn');
     this.leftDrawerTitle = document.getElementById('left-drawer-title');
     this.leftDrawerBadge = document.getElementById('left-drawer-badge');
+    this.reportCloseBtn = document.getElementById('report-close-btn');
     this.railTabBtns = Array.from(document.querySelectorAll('[data-rail-tab]'));
     this.tabPanes = {
       missions: document.getElementById('tab-missions'),
@@ -111,6 +112,13 @@ export class UIController {
     this.compassNeedleEl = document.getElementById('compass-needle');
     this.compassSunDotEl = document.getElementById('compass-sun-dot');
 
+    this.modeTransitionHud = document.getElementById('mode-transition-hud');
+    this.modeTransitionFromEl = document.getElementById('mode-transition-from');
+    this.modeTransitionToEl = document.getElementById('mode-transition-to');
+    this.modeTransitionTitleEl = document.getElementById('mode-transition-title');
+    this.modeTransitionSubtitleEl = document.getElementById('mode-transition-subtitle');
+    this.modeTransitionFillEl = document.getElementById('mode-transition-progress-fill');
+
     this.layerChangeCallback = null;
     this.diskToggleCallback = null;
     this.lightingToggleCallback = null;
@@ -135,7 +143,11 @@ export class UIController {
     this._isRightDrawerOpen = false;
     this._isLeftCollapsed = false;
     this._activeLeftTab = 'missions';
+    this._prevLeftTabBeforeReport = 'missions';
+    this._wasCollapsedBeforeReport = false;
     this._isQuickMenuOpen = false;
+    this._modeTransitionSeq = 0;
+    this._modeTransitionTimer = null;
     this._camFwd = new THREE.Vector3();
     this._camRight = new THREE.Vector3();
     this._camUp = new THREE.Vector3();
@@ -143,6 +155,7 @@ export class UIController {
 
     this._bindEvents();
     this._syncLayerInfo(LOD_CONFIG.DEFAULT_LAYER);
+    this.setViewModeUI(VIEW_MODES.LUNAR);
   }
 
   _bindEvents() {
@@ -157,11 +170,19 @@ export class UIController {
     this.railTabBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
         const tab = btn.dataset.railTab;
+        if (tab === 'ai' && this._activeLeftTab !== 'ai') {
+          this._prevLeftTabBeforeReport = this._activeLeftTab || 'missions';
+          this._wasCollapsedBeforeReport = this._isLeftCollapsed;
+        }
         if (this._isLeftCollapsed) {
           this.setLeftCollapsed(false);
         }
         this.setLeftTab(tab);
       });
+    });
+
+    this.reportCloseBtn?.addEventListener('click', () => {
+      this.closeReportPanel();
     });
 
     if (this.leftCollapseBtn) {
@@ -440,6 +461,9 @@ export class UIController {
 
   setLeftTab(tabName) {
     if (!this.tabPanes[tabName]) return;
+    if (tabName === 'ai' && this._activeLeftTab !== 'ai') {
+      this._prevLeftTabBeforeReport = this._activeLeftTab || 'missions';
+    }
     this._activeLeftTab = tabName;
 
     this.railTabBtns.forEach((btn) => {
@@ -452,8 +476,26 @@ export class UIController {
     const meta = TAB_TITLES[tabName] || { title: 'Panel', badge: '' };
     if (this.leftDrawerTitle) this.leftDrawerTitle.textContent = meta.title;
     if (this.leftDrawerBadge) this.leftDrawerBadge.textContent = meta.badge;
+    if (this.reportCloseBtn) {
+      const isAi = tabName === 'ai';
+      this.reportCloseBtn.hidden = !isAi;
+      this.reportCloseBtn.setAttribute('aria-hidden', isAi ? 'false' : 'true');
+    }
     document.body.classList.toggle('ai-tab-active', tabName === 'ai' && !this._isLeftCollapsed);
     this.leftTabChangeCallback?.(this._activeLeftTab, { collapsed: this._isLeftCollapsed });
+  }
+
+  closeReportPanel() {
+    const fallbackTab =
+      this._prevLeftTabBeforeReport && this._prevLeftTabBeforeReport !== 'ai'
+        ? this._prevLeftTabBeforeReport
+        : 'missions';
+    const shouldCollapse = Boolean(this._wasCollapsedBeforeReport);
+    this._wasCollapsedBeforeReport = false;
+    this.setLeftTab(fallbackTab);
+    if (shouldCollapse) {
+      this.setLeftCollapsed(true);
+    }
   }
 
   setLeftCollapsed(collapsed) {
@@ -502,10 +544,62 @@ export class UIController {
       mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
         ? VIEW_MODES.CISLUNAR
         : VIEW_MODES.LUNAR;
-    document.body.classList.toggle('cislunar-mode', activeMode === VIEW_MODES.CISLUNAR);
+    const isCislunar = activeMode === VIEW_MODES.CISLUNAR;
+    document.body.classList.toggle('cislunar-mode', isCislunar);
+    if (this.simpleTrajectoryBtn) {
+      this.simpleTrajectoryBtn.hidden = !isCislunar;
+      this.simpleTrajectoryBtn.setAttribute('aria-hidden', isCislunar ? 'false' : 'true');
+    }
     this.viewModeBtns.forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.viewMode === activeMode);
     });
+  }
+
+  showModeTransition({
+    fromLabel = '3D MOON',
+    toLabel = 'TRAJECTORY',
+    title = 'SWITCHING VIEW MODE',
+    subtitle = 'Synchronizing orbital telemetry...',
+    durationMs = 950,
+  } = {}) {
+    if (!this.modeTransitionHud) return;
+    const seq = ++this._modeTransitionSeq;
+    if (this._modeTransitionTimer) {
+      clearTimeout(this._modeTransitionTimer);
+      this._modeTransitionTimer = null;
+    }
+
+    const safeDuration = Math.max(350, Number(durationMs) || 950);
+    if (this.modeTransitionFromEl) this.modeTransitionFromEl.textContent = fromLabel;
+    if (this.modeTransitionToEl) this.modeTransitionToEl.textContent = toLabel;
+    if (this.modeTransitionTitleEl) this.modeTransitionTitleEl.textContent = title;
+    if (this.modeTransitionSubtitleEl) this.modeTransitionSubtitleEl.textContent = subtitle;
+
+    this.modeTransitionHud.style.setProperty('--mt-duration', `${safeDuration}ms`);
+    if (this.modeTransitionFillEl) {
+      this.modeTransitionFillEl.classList.remove('running');
+      void this.modeTransitionFillEl.offsetWidth;
+      this.modeTransitionFillEl.classList.add('running');
+    }
+
+    this.modeTransitionHud.classList.add('active');
+    this.modeTransitionHud.setAttribute('aria-hidden', 'false');
+
+    this._modeTransitionTimer = setTimeout(() => {
+      if (seq !== this._modeTransitionSeq) return;
+      this.hideModeTransition();
+    }, safeDuration + 80);
+  }
+
+  hideModeTransition() {
+    if (this._modeTransitionTimer) {
+      clearTimeout(this._modeTransitionTimer);
+      this._modeTransitionTimer = null;
+    }
+    if (!this.modeTransitionHud) return;
+    this.modeTransitionHud.classList.remove('active');
+    this.modeTransitionHud.setAttribute('aria-hidden', 'true');
+    this.modeTransitionFillEl?.classList.remove('running');
   }
 
   setCislunarFocusUI() {}

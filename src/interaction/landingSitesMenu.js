@@ -51,6 +51,8 @@ export class LandingSitesMenu {
    * @param {Function | null} [options.onAddToMission]
    * @param {Function | null} [options.onSetMissionTarget]
    * @param {Function | null} [options.onRequestOpenTab]
+   * @param {Function | null} [options.onPickOnMoon]
+   * @param {Function | null} [options.onCancelPickOnMoon]
    */
   constructor({
     scene,
@@ -63,6 +65,8 @@ export class LandingSitesMenu {
     onAddToMission = null,
     onSetMissionTarget = null,
     onRequestOpenTab = null,
+    onPickOnMoon = null,
+    onCancelPickOnMoon = null,
   }) {
     this.scene = scene;
     this.camera = camera;
@@ -75,6 +79,8 @@ export class LandingSitesMenu {
     this.onAddToMission = onAddToMission;
     this.onSetMissionTarget = onSetMissionTarget;
     this.onRequestOpenTab = onRequestOpenTab;
+    this.onPickOnMoon = onPickOnMoon;
+    this.onCancelPickOnMoon = onCancelPickOnMoon;
 
     this.isOpen = this.isEmbedded;
     this.activeTab = 'nasa';
@@ -92,6 +98,7 @@ export class LandingSitesMenu {
     this._apiSyncState = 'idle';
     this._apiSyncNote = '';
     this._formError = '';
+    this._isPickingOnMoon = false;
 
     this.surfaceRadius = MOON_CONFIG.RADIUS + 0.000022;
     this.group = new THREE.Group();
@@ -268,6 +275,9 @@ export class LandingSitesMenu {
           maxlength="140"
         />
         <div class="ls-form-error" data-field="form-error" style="display: none; color: #ff8a80; font-size: 10.5px;"></div>
+        <button type="button" class="hud-btn ls-pick-moon-btn" data-action="pick-on-moon" title="Select coordinates directly on the 3D Moon surface">
+          Pick on Moon
+        </button>
         <div class="ls-form-actions">
           <button type="button" class="hud-btn" data-action="fill-camera">From Cam Center</button>
           <button type="submit" class="hud-btn">Save Site</button>
@@ -303,6 +313,7 @@ export class LandingSitesMenu {
     this.customDescInput = this.windowEl.querySelector('[data-field="custom-desc"]');
     this.formErrorEl = this.windowEl.querySelector('[data-field="form-error"]');
     this.fillCameraBtn = this.windowEl.querySelector('[data-action="fill-camera"]');
+    this.pickMoonBtn = this.windowEl.querySelector('[data-action="pick-on-moon"]');
 
     this.listEl = this.windowEl.querySelector('[data-field="list"]');
     this.footerStatusEl = this.windowEl.querySelector('[data-field="footer-status"]');
@@ -377,6 +388,7 @@ export class LandingSitesMenu {
     this.syncApiBtn.addEventListener('click', () => this.syncFromOnlineCatalog());
 
     this.fillCameraBtn.addEventListener('click', () => this.fillFormFromCameraCenter());
+    this.pickMoonBtn?.addEventListener('click', () => this._startPickOnMoon());
 
     this.customFormEl.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -470,14 +482,59 @@ export class LandingSitesMenu {
   close() {
     if (this.isEmbedded) return;
     this.isOpen = false;
+    if (this._isPickingOnMoon) {
+      this.onCancelPickOnMoon?.();
+      this._setPickingOnMoonUI(false);
+    }
     this.windowEl.classList.remove('open');
     this._updateTopButtonUI();
   }
 
   setActiveTab(tab) {
     this.activeTab = tab === 'custom' ? 'custom' : 'nasa';
+    if (this.activeTab !== 'custom' && this._isPickingOnMoon) {
+      this.onCancelPickOnMoon?.();
+      this._setPickingOnMoonUI(false);
+    }
     this._formError = '';
     this._renderWindow();
+  }
+
+  _setPickingOnMoonUI(picking) {
+    this._isPickingOnMoon = Boolean(picking);
+    if (this.pickMoonBtn) {
+      this.pickMoonBtn.classList.toggle('picking', this._isPickingOnMoon);
+      this.pickMoonBtn.textContent = this._isPickingOnMoon
+        ? 'Click on Moon... (ESC)'
+        : 'Pick on Moon';
+    }
+  }
+
+  _startPickOnMoon() {
+    if (typeof this.onPickOnMoon !== 'function') return;
+    if (this._isPickingOnMoon) {
+      this.onCancelPickOnMoon?.();
+      this._setPickingOnMoonUI(false);
+      return;
+    }
+    this._setPickingOnMoonUI(true);
+    this.onPickOnMoon({
+      targetKey: 'landing-sites-custom',
+      label: 'Click on the Moon to set custom landing site coordinates',
+      onPick: ({ lat, lon }) => {
+        this._setPickingOnMoonUI(false);
+        this.customLatInput.value = lat.toFixed(4);
+        this.customLonInput.value = lon.toFixed(4);
+        if (!this.customNameInput.value.trim()) {
+          this.customNameInput.value = `Site ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+        }
+        this._formError = '';
+        this._renderFormError();
+        this.customNameInput.focus();
+        this.customNameInput.select();
+      },
+      onCancel: () => this._setPickingOnMoonUI(false),
+    });
   }
 
   _updateTopButtonUI() {

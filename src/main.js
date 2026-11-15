@@ -11,6 +11,7 @@ import { UIController } from './interaction/uiController.js';
 import { SurfaceContextMenu } from './interaction/surfaceContextMenu.js';
 import { CelestialTooltip } from './interaction/celestialTooltip.js';
 import { RulerTool } from './interaction/rulerTool.js';
+import { MoonCoordPicker } from './interaction/moonCoordPicker.js';
 import { LandingSitesMenu } from './interaction/landingSitesMenu.js';
 import { MissionPanel } from './interaction/missionPanel.js';
 import { TimelineController } from './interaction/timelineController.js';
@@ -203,10 +204,32 @@ async function bootstrap() {
     });
 
     function setViewMode(mode, options = {}) {
+      const prevMode = sceneManager.viewMode;
       const normalized =
         mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
           ? VIEW_MODES.CISLUNAR
           : VIEW_MODES.LUNAR;
+      if (prevMode !== normalized && !options.silentTransition) {
+        const activeMission = missionPanel?.getActiveMission();
+        const missionLabel = activeMission?.name ? `Mission: ${activeMission.name}` : null;
+        if (normalized === VIEW_MODES.CISLUNAR) {
+          uiController.showModeTransition({
+            fromLabel: '3D MOON',
+            toLabel: 'TRAJECTORY',
+            title: 'LOADING CISLUNAR TRAJECTORY VIEW',
+            subtitle: missionLabel || 'Aligning Earth–Moon orbital transfer frame...',
+            durationMs: 1000,
+          });
+        } else {
+          uiController.showModeTransition({
+            fromLabel: 'TRAJECTORY',
+            toLabel: '3D MOON',
+            title: 'LOADING 3D LUNAR GLOBE',
+            subtitle: missionLabel || 'Focusing high-resolution lunar terrain & illumination...',
+            durationMs: 900,
+          });
+        }
+      }
       celestialEnv.setViewMode(normalized);
       if (lodManager) {
         lodManager.setViewMode(normalized);
@@ -256,6 +279,16 @@ async function bootstrap() {
     if (!window.SurfaceRendererBridge) {
       window.SurfaceRendererBridge = lunarHorizonModal;
     }
+    lunarHorizonModal.onClose((targetData) => {
+      const place = targetData?.pointName || targetData?.missionName || 'Landing Point';
+      uiController.showModeTransition({
+        fromLabel: 'SURFACE',
+        toLabel: '3D MOON',
+        title: 'RETURNING TO 3D LUNAR GLOBE',
+        subtitle: `Detaching surface view (${place})`,
+        durationMs: 550,
+      });
+    });
 
     let missionPanel = null;
     let aiReportPanel = null;
@@ -332,7 +365,10 @@ async function bootstrap() {
     uiController.onTopMissionClick(() => {
       uiController.setLeftCollapsed(false);
       uiController.setLeftTab('missions');
+      missionPanel?.openMissionList();
     });
+
+    let moonCoordPicker = null;
 
     const rulerTool = new RulerTool({
       scene: moonGroup,
@@ -349,6 +385,9 @@ async function bootstrap() {
       },
       onStateChange: ({ isActive, canSave }) => {
         uiController.setRulerActiveUI(isActive);
+        if (isActive && moonCoordPicker?.isActive) {
+          moonCoordPicker.cancel();
+        }
         if (missionPanel) {
           missionPanel.setSaveRulerEnabled(canSave);
         }
@@ -358,6 +397,20 @@ async function bootstrap() {
     // Друга кнопка лінійки на лівій рейці
     uiController.railRulerBtn?.addEventListener('click', () => {
       rulerTool.toggle();
+    });
+
+    moonCoordPicker = new MoonCoordPicker({
+      camera: sceneManager.camera,
+      moonGroup,
+      domElement: container,
+      onBeforeStart: () => {
+        if (rulerTool.isActive) {
+          rulerTool.setActive(false);
+        }
+        if (sceneManager.viewMode === VIEW_MODES.CISLUNAR && sceneManager.getCislunarFocus() !== 'MOON') {
+          sceneManager.setCislunarFocus('MOON', { animate: true });
+        }
+      },
     });
 
     missionPanel = new MissionPanel({
@@ -393,7 +446,11 @@ async function bootstrap() {
             forceReload: Boolean(meta.generatedDoc),
           });
         }
-        if (
+        if (meta.openTrajectoryView === true) {
+          if (sceneManager.viewMode !== VIEW_MODES.CISLUNAR) {
+            setViewMode(VIEW_MODES.CISLUNAR, { focus: 'SYSTEM' });
+          }
+        } else if (
           isMissionActivation &&
           mission?.flight?.landingDateIso &&
           sceneManager.viewMode !== VIEW_MODES.CISLUNAR &&
@@ -440,6 +497,8 @@ async function bootstrap() {
         timelineController.setDate(date, true);
       },
       getViewMode: () => sceneManager.viewMode,
+      onPickOnMoon: (pickOpts) => moonCoordPicker.startPicking(pickOpts),
+      onCancelPickOnMoon: () => moonCoordPicker.cancel(),
     });
 
     applyMissionTrajectory(missionPanel.getActiveMission(), { syncFromMeta: true });
@@ -471,12 +530,6 @@ async function bootstrap() {
         sceneManager.flyToCoordinates(site.lat, site.lon, targetZoom);
       },
       onSetMissionTarget: (site) => {
-        missionPanel.setActiveLandingSite({
-          name: site.name,
-          lat: site.lat,
-          lon: site.lon,
-          note: site.region || site.description || '',
-        });
         const active = missionPanel.getActiveMission();
         if (active && !active.flight?.landingDateIso && site.date && Number.isFinite(Date.parse(site.date))) {
           missionPanel.updateActiveFlightDates({
@@ -484,6 +537,12 @@ async function bootstrap() {
             dateSource: 'manual',
           });
         }
+        missionPanel.setActiveLandingSite({
+          name: site.name,
+          lat: site.lat,
+          lon: site.lon,
+          note: site.region || site.description || '',
+        });
         missionPanel.openActiveMissionDetail('flight');
         uiController.setLeftCollapsed(false);
         uiController.setLeftTab('missions');
@@ -503,6 +562,8 @@ async function bootstrap() {
         uiController.setLeftCollapsed(false);
         uiController.setLeftTab('sites');
       },
+      onPickOnMoon: (pickOpts) => moonCoordPicker.startPicking(pickOpts),
+      onCancelPickOnMoon: () => moonCoordPicker.cancel(),
     });
 
     uiController.setSearchProvider(() => {

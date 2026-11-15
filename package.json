@@ -6,6 +6,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "gdrive:auth": "node scripts/gdrive_upload.mjs --auth-only",
+    "gdrive:pack": "node scripts/gdrive_upload.mjs --pack-only",
+    "gdrive:upload": "node scripts/gdrive_upload.mjs",
+    "gdrive:upload-only": "node scripts/gdrive_upload.mjs --upload-only",
+    "gdrive:sync": "node scripts/gdrive_sync.mjs",
     "download:starmap": "node scripts/download_starmap.mjs",
     "download:earth": "node scripts/download_earth_textures.mjs",
     "download:dem": "node scripts/download_lunar_dem.mjs"

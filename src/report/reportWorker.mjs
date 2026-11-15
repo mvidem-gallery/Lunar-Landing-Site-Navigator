@@ -2,6 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import {
+  ensureDriveFile,
+  getCachedFilePath,
+  hasDriveFile,
+  loadDriveManifest,
+  preferLocalAssets,
+} from '../gdrive/driveClient.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -9,6 +16,7 @@ const REPORT_ROOT = process.env.REPORT_ROOT_DIR || process.cwd();
 const PROJECT_ROOT = process.env.NASA_PROJECT_ROOT || path.resolve(REPORT_ROOT, '../..');
 const CACHE_DIR = path.join(PROJECT_ROOT, 'cache', 'report-bridge');
 const BUNDLED_MODULE_PATH = path.join(CACHE_DIR, 'report-core.mjs');
+const REPORT_DATA_LOGICAL_PREFIX = 'report/lunar-report-dss/src/data/';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_SYNTHESIS_MODEL = 'google/gemini-2.5-flash';
@@ -43,6 +51,28 @@ loadEnvFile(path.join(REPORT_ROOT, '.env.local'));
 loadEnvFile(path.join(REPORT_ROOT, '.env'));
 loadEnvFile(path.join(PROJECT_ROOT, '.env.local'));
 loadEnvFile(path.join(PROJECT_ROOT, '.env'));
+
+async function ensureReportDriveData() {
+  const localDataDir = path.join(REPORT_ROOT, 'src', 'data');
+  const manifest = loadDriveManifest();
+  const reportKeys = Object.keys(manifest.files || {}).filter((k) =>
+    k.startsWith(REPORT_DATA_LOGICAL_PREFIX)
+  );
+  if (reportKeys.length === 0) return;
+
+  for (const key of reportKeys) {
+    const fileName = key.slice(REPORT_DATA_LOGICAL_PREFIX.length);
+    const localPath = path.join(localDataDir, fileName);
+    if (preferLocalAssets() && fs.existsSync(localPath)) {
+      continue;
+    }
+    try {
+      await ensureDriveFile(key);
+    } catch (err) {
+      console.warn(`[report-dss] Drive sync failed for ${key}: ${err?.message || err}`);
+    }
+  }
+}
 
 let reportCorePromise = null;
 
@@ -150,6 +180,7 @@ async function generateMissionReport(body) {
     return { statusCode: 400, payload: { error: 'INVALID_LONGITUDE_RANGE' } };
   }
 
+  await ensureReportDriveData();
   const core = await getReportCore();
   const { telemetry, sources, ephemerisMode } = await core.extractLunarTelemetryAndSources({
     lat,
@@ -275,6 +306,8 @@ async function generateMissionReport(body) {
 
 function getHealthInfo() {
   const dataDir = path.join(REPORT_ROOT, 'src', 'data');
+  const globalKey = `${REPORT_DATA_LOGICAL_PREFIX}lunar-global-dem.bin`;
+  const polarKey = `${REPORT_DATA_LOGICAL_PREFIX}lola-80s-100m.bin`;
   return {
     ok: true,
     reportRoot: REPORT_ROOT,
@@ -282,8 +315,14 @@ function getHealthInfo() {
     synthesisModel: process.env.OPENROUTER_API_KEY
       ? process.env.OPENROUTER_SYNTHESIS_MODEL || DEFAULT_SYNTHESIS_MODEL
       : 'deterministic-telemetry-fallback',
-    hasGlobalDemBin: fs.existsSync(path.join(dataDir, 'lunar-global-dem.bin')),
-    hasPolarLolaBin: fs.existsSync(path.join(dataDir, 'lola-80s-100m.bin')),
+    hasGlobalDemBin:
+      fs.existsSync(path.join(dataDir, 'lunar-global-dem.bin')) ||
+      fs.existsSync(getCachedFilePath(globalKey)) ||
+      hasDriveFile(globalKey),
+    hasPolarLolaBin:
+      fs.existsSync(path.join(dataDir, 'lola-80s-100m.bin')) ||
+      fs.existsSync(getCachedFilePath(polarKey)) ||
+      hasDriveFile(polarKey),
   };
 }
 

@@ -2,6 +2,47 @@ import { TRAJECTORY_CONFIG } from '../config/constants.js';
 import { formatMissionDuration, parseUtcStringToMs } from '../astronomy/trajectoryGenerator.js';
 
 export const MISSION_SCHEMA_VERSION = 2;
+export const MISSION_CATEGORIES = ['historical', 'custom', 'future'];
+
+export function parseCatalogSiteDateIso(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  const trimmed = dateStr.trim();
+  if (!trimmed) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed}T12:00:00.000Z`;
+  }
+  const plannedYearMatch = trimmed.match(/\b(20\d{2})\b/);
+  if (plannedYearMatch && /planned/i.test(trimmed)) {
+    return `${plannedYearMatch[1]}-06-01T12:00:00.000Z`;
+  }
+  if (/artemis\s*iii/i.test(trimmed)) {
+    return '2027-09-01T12:00:00.000Z';
+  }
+  const ms = Date.parse(trimmed);
+  if (Number.isFinite(ms)) {
+    return new Date(ms).toISOString();
+  }
+  return null;
+}
+
+export function inferMissionCategory(raw) {
+  if (raw && MISSION_CATEGORIES.includes(raw.category)) {
+    return raw.category;
+  }
+  if (raw?.id === 'mission-apollo-11') return 'historical';
+  if (raw?.id === 'mission-artemis-south') return 'future';
+  const siteStatus = raw?.modules?.siteStatus;
+  if (siteStatus === 'landed') return 'historical';
+  if (siteStatus === 'planned') return 'future';
+  if (siteStatus === 'custom') return 'custom';
+  if (raw?.modules?.siteId) {
+    const landingMs = raw?.flight?.landingDateIso ? Date.parse(raw.flight.landingDateIso) : NaN;
+    if (Number.isFinite(landingMs) && landingMs < Date.UTC(2026, 0, 1)) {
+      return 'historical';
+    }
+  }
+  return 'custom';
+}
 
 export function formatCoords(lat, lon) {
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return 'UNSET';
@@ -224,10 +265,21 @@ export function normalizeMission(raw) {
         }
       : { notes: '' };
 
+  if (!modules.siteId) {
+    if (m.id === 'mission-apollo-11') {
+      modules.siteId = 'apollo-11';
+      modules.siteStatus = modules.siteStatus || 'landed';
+    } else if (m.id === 'mission-artemis-south') {
+      modules.siteId = 'artemis3-malapert-massif';
+      modules.siteStatus = modules.siteStatus || 'planned';
+    }
+  }
+
   return {
     schemaVersion: MISSION_SCHEMA_VERSION,
     id: String(m.id || `mission-${Date.now()}`),
     name: String(m.name || 'Mission').trim() || 'Mission',
+    category: inferMissionCategory({ ...m, modules }),
     createdAt: m.createdAt || nowIso,
     updatedAt: m.updatedAt || m.createdAt || nowIso,
     landingSite,
@@ -242,6 +294,7 @@ export function normalizeMission(raw) {
 export function createMissionRecord({
   id = null,
   name = 'New Mission',
+  category = 'custom',
   landingSite = null,
   landingDateIso = null,
   launchDateIso = null,
@@ -250,6 +303,7 @@ export function createMissionRecord({
   trajectory = null,
   useDefaultTrajectory = false,
   notes = '',
+  siteMeta = null,
   generation = null,
 } = {}) {
   const nowIso = new Date().toISOString();
@@ -282,6 +336,7 @@ export function createMissionRecord({
     schemaVersion: MISSION_SCHEMA_VERSION,
     id: id || `mission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     name: String(name || 'New Mission').trim() || 'New Mission',
+    category: MISSION_CATEGORIES.includes(category) ? category : 'custom',
     createdAt: nowIso,
     updatedAt: nowIso,
     landingSite: normalizeLandingSite(landingSite),
@@ -302,6 +357,7 @@ export function createMissionRecord({
     measurements: [],
     modules: {
       notes: String(notes || ''),
+      ...(siteMeta && typeof siteMeta === 'object' ? siteMeta : {}),
       ...(generation && typeof generation === 'object' ? { generation } : {}),
     },
   };
@@ -314,6 +370,7 @@ export function createDefaultMissions() {
       schemaVersion: MISSION_SCHEMA_VERSION,
       id: 'mission-artemis-south',
       name: 'Artemis III — South Pole',
+      category: 'future',
       createdAt: nowIso,
       updatedAt: nowIso,
       landingSite: {
@@ -350,12 +407,15 @@ export function createDefaultMissions() {
       measurements: [],
       modules: {
         notes: 'South Pole surface exploration baseline with direct cislunar transfer trajectory.',
+        siteId: 'artemis3-malapert-massif',
+        siteStatus: 'planned',
       },
     },
     {
       schemaVersion: MISSION_SCHEMA_VERSION,
       id: 'mission-apollo-11',
       name: 'Apollo 11 — Tranquility Base',
+      category: 'historical',
       createdAt: nowIso,
       updatedAt: nowIso,
       landingSite: {
@@ -392,7 +452,122 @@ export function createDefaultMissions() {
       measurements: [],
       modules: {
         notes: 'Historical reference mission. Load a custom lwp-trajectory/1 JSON in TRAJ tab to visualize transfer arc.',
+        siteId: 'apollo-11',
+        siteStatus: 'landed',
       },
     },
   ].map(normalizeMission);
+}
+
+/**
+ * Builds a `/api/trajectory/jobs` generation payload for recalculating a mission's
+ * trajectory after its landing target changes, preserving the user's previously
+ * configured parameters (date mode, launch/landing date, vehicle, spaceport,
+ * transfer type, landing window constraints, terrain/cache flags).
+ */
+export function buildTrajectoryRecalcPayload(mission, { fallbackDateIso = null } = {}) {
+  const site = normalizeLandingSite(mission?.landingSite);
+  if (!site) return null;
+
+  const savedPayload =
+    mission?.modules?.generation?.payload &&
+    typeof mission.modules.generation.payload === 'object'
+      ? mission.modules.generation.payload
+      : null;
+  const savedReq =
+    mission?.modules?.generation?.request &&
+    typeof mission.modules.generation.request === 'object'
+      ? mission.modules.generation.request
+      : null;
+
+  let dateMode = 'arrival';
+  if (savedPayload?.dateMode === 'launch' || savedPayload?.dateMode === 'arrival') {
+    dateMode = savedPayload.dateMode;
+  } else if (savedReq?.launch_date && !savedReq?.arrival_date) {
+    dateMode = 'launch';
+  } else if (savedReq?.arrival_date) {
+    dateMode = 'arrival';
+  } else if (!mission?.flight?.landingDateIso && mission?.flight?.launchDateIso) {
+    dateMode = 'launch';
+  }
+
+  const dateSource = mission?.flight?.dateSource;
+  const hasUserEditedDate = Boolean(dateSource && dateSource !== 'trajectory' && dateSource !== 'unset');
+
+  let inputDateIso = null;
+  if (dateMode === 'launch') {
+    inputDateIso =
+      (hasUserEditedDate ? mission?.flight?.launchDateIso : null) ||
+      savedPayload?.launchDateIso ||
+      mission?.flight?.launchDateIso ||
+      savedReq?.launch_date ||
+      mission?.flight?.landingDateIso ||
+      fallbackDateIso ||
+      null;
+  } else {
+    inputDateIso =
+      (hasUserEditedDate ? mission?.flight?.landingDateIso : null) ||
+      savedPayload?.landingDateIso ||
+      mission?.flight?.landingDateIso ||
+      savedReq?.arrival_date ||
+      mission?.flight?.launchDateIso ||
+      fallbackDateIso ||
+      null;
+  }
+
+  const adv =
+    savedPayload?.advanced && typeof savedPayload.advanced === 'object'
+      ? savedPayload.advanced
+      : {};
+
+  const trajectory =
+    (adv.trajectory ?? savedReq?.trajectory) === 'hohmann' ? 'hohmann' : 'direct';
+  const spaceport = adv.spaceport ?? savedReq?.spaceport ?? null;
+  const rocket = adv.rocket ?? savedReq?.rocket ?? null;
+  const spacecraft = adv.spacecraft ?? savedReq?.spacecraft ?? null;
+  const heightM =
+    adv.heightM !== undefined
+      ? adv.heightM
+      : Number.isFinite(Number(savedReq?.height_m))
+        ? Number(savedReq.height_m)
+        : null;
+  const landingWindow =
+    adv.landingWindow && typeof adv.landingWindow === 'object'
+      ? { ...adv.landingWindow }
+      : savedReq?.transfer_config
+        ? null
+        : { mode: 'flexible' };
+  const transferConfig =
+    !landingWindow && typeof savedReq?.transfer_config === 'string' && savedReq.transfer_config.trim()
+      ? savedReq.transfer_config.trim()
+      : adv.transferConfig || null;
+  const noTerrain =
+    adv.noTerrain !== undefined
+      ? Boolean(adv.noTerrain)
+      : savedReq
+        ? savedReq.terrain_dir === ''
+        : false;
+  const noCache =
+    adv.noCache !== undefined ? Boolean(adv.noCache) : Boolean(savedReq?.no_cache);
+
+  return {
+    dateMode,
+    ...(inputDateIso
+      ? dateMode === 'launch'
+        ? { launchDateIso: inputDateIso }
+        : { landingDateIso: inputDateIso }
+      : {}),
+    landingSite: { lat: site.lat, lon: site.lon },
+    advanced: {
+      trajectory,
+      spaceport: spaceport || null,
+      rocket: rocket || null,
+      spacecraft: spacecraft || null,
+      heightM: heightM ?? null,
+      ...(landingWindow ? { landingWindow } : {}),
+      ...(transferConfig ? { transferConfig } : {}),
+      noTerrain,
+      noCache,
+    },
+  };
 }

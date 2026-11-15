@@ -6,3 +6,16 @@ archive/
 dist/
 .lunar-cache/
 archive/2/lunar-horizon/worker/index.js
+
+# Google Drive OAuth credentials, tokens & bundle staging (keep out of Git!)
+.gdrive-token.json
+gdrive-credentials.json
+credentials.json
+client_secret*.json
+.gdrive-staging/
+
+# Heavy binary assets stored in Google Drive (synced via drive-manifest.json)
+lunar-horizon-latest/lunar-horizon/data/*.bin
+lunar-horizon-latest/lunar-horizon/assets/three.js
+lunar-horizon-latest/lunar-horizon/assets/stars-hyg.bin
+lunar-horizon-latest/lunar-horizon/assets/earth-blue-marble.webp

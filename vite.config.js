@@ -1,11 +1,17 @@
 import { defineConfig } from 'vite';
 import { PROXY_CONFIG } from './src/config/constants.js';
+import { gdriveAssetsPlugin } from './src/gdrive/vitePlugin.mjs';
 import { lunarHorizonPlugin } from './src/lunar-horizon/vitePlugin.mjs';
 import { trajectoryServicePlugin } from './src/trajectory/vitePlugin.mjs';
 import { reportServicePlugin } from './src/report/vitePlugin.mjs';
 
 export default defineConfig({
-  plugins: [lunarHorizonPlugin(), trajectoryServicePlugin(), reportServicePlugin()],
+  plugins: [
+    gdriveAssetsPlugin(),
+    lunarHorizonPlugin(),
+    trajectoryServicePlugin(),
+    reportServicePlugin(),
+  ],
   server: {
     watch: {
       // Виключаємо десятки тисяч локальних тайлів, сирі архіви DEM і папки задач генератора траєкторій із file-watcher Vite

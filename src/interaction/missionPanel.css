@@ -114,6 +114,18 @@
   background: var(--sx-nominal);
 }
 
+.mission-status-dot.catalog-historical {
+  background: var(--sx-warn);
+}
+
+.mission-status-dot.catalog-custom {
+  background: var(--sx-blue);
+}
+
+.mission-status-dot.catalog-future {
+  background: #a855f7;
+}
+
 .mission-card-name {
   font-size: 12px;
   font-weight: 600;
@@ -318,6 +330,63 @@
   background: #f4f7fa;
   color: #05070a;
   font-weight: 700;
+}
+
+.mission-cat-tabs .mission-subtab-btn {
+  font-size: 9px;
+  padding: 5px 2px;
+}
+
+.mission-preset-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 7px;
+  border-radius: var(--radius-xs);
+  background: rgba(15, 21, 30, 0.52);
+  border: 1px solid var(--hud-border);
+}
+
+.mission-preset-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mission-preset-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(8, 11, 16, 0.65);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--radius-xs);
+  padding: 1px;
+}
+
+.mission-preset-pill {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 1px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.mission-preset-pill:hover {
+  color: var(--text-primary);
+  background: var(--hud-hover);
+}
+
+.mission-preset-pill.active {
+  background: var(--sx-blue-soft);
+  color: var(--sx-blue-text);
 }
 
 /* ==================== DETAIL BLOCKS ==================== */
@@ -678,6 +747,17 @@
   color: var(--sx-blue-text);
 }
 
+.mission-recalc-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mission-recalc-row .mission-gen-status {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ==================== SHARED CONTROLS ==================== */
 .mission-icon-btn {
   width: 26px;
@@ -847,6 +927,22 @@
 .mission-mini-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+.mission-pick-moon-btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+}
+
+.mission-pick-moon-btn.picking {
+  background: var(--sx-warn-soft);
+  border-color: var(--sx-warn);
+  color: #fde68a;
+  animation: moon-pick-pulse 1.2s ease-in-out infinite;
 }
 
 .mission-mini-btn.danger:hover:not(:disabled) {

@@ -4,6 +4,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { MOON_CONFIG, TRAJECTORY_CONFIG, VIEW_MODES } from '../config/constants.js';
 import {
+  buildTrajectoryRecalcPayload,
   computeTransitDurationSec,
   createDefaultMissions,
   createMissionRecord,
@@ -12,11 +13,14 @@ import {
   formatTransitDuration,
   formatUtcCompact,
   formatUtcTimestamp,
+  MISSION_CATEGORIES,
   normalizeLandingSite,
   normalizeMission,
+  parseCatalogSiteDateIso,
   parseDatetimeLocalUtc,
   toDatetimeLocalUtc,
 } from '../data/missionModel.js';
+import { NASA_MOON_EXPLORATION_SITES } from '../data/lunarLandingSites.js';
 import { deleteTrajectoryDoc, saveTrajectoryDoc } from '../data/trajectoryStorage.js';
 import {
   extractScheduleFromGeneratedResult,
@@ -27,6 +31,7 @@ import { RulerTool } from './rulerTool.js';
 import './missionPanel.css';
 
 const MISSIONS_STORAGE_KEY = 'lunar_missions_v1';
+const CUSTOM_SITES_STORAGE_KEY = 'lunar_custom_landing_sites_v1';
 
 export class MissionPanel {
   static latLonToNormal(latDeg, lonDeg) {
@@ -80,6 +85,8 @@ export class MissionPanel {
    * @param {Function|null} [options.getCurrentTimelineDate]
    * @param {Function|null} [options.onJumpTimelineToDate]
    * @param {Function|null} [options.getViewMode]
+   * @param {Function|null} [options.onPickOnMoon]
+   * @param {Function|null} [options.onCancelPickOnMoon]
    */
   constructor({
     container,
@@ -98,6 +105,8 @@ export class MissionPanel {
     getCurrentTimelineDate = null,
     onJumpTimelineToDate = null,
     getViewMode = null,
+    onPickOnMoon = null,
+    onCancelPickOnMoon = null,
   }) {
     this.container = container;
     this.scene = scene;
@@ -115,6 +124,8 @@ export class MissionPanel {
     this.getCurrentTimelineDate = getCurrentTimelineDate;
     this.onJumpTimelineToDate = onJumpTimelineToDate;
     this.getViewMode = getViewMode;
+    this.onPickOnMoon = onPickOnMoon;
+    this.onCancelPickOnMoon = onCancelPickOnMoon;
 
     const loaded = this._loadState();
     this.missions = loaded.missions;
@@ -124,6 +135,11 @@ export class MissionPanel {
     this._panelView = 'detail';
     // 'flight' | 'traj' | 'surface'
     this._detailTab = 'flight';
+    // 'historical' | 'custom' | 'future'
+    this._listTab = this._categoryForMission(this.getActiveMission());
+    this._presetSiteTab = this._listTab || 'historical';
+    this._selectedPresetSiteId = '';
+    this._lastAutoPresetName = '';
     this._listSearchQuery = '';
     this._isRenameOpen = false;
     this._isNewMissionFormOpen = false;
@@ -142,7 +158,14 @@ export class MissionPanel {
     this._pointFormError = '';
     this._trajStatusMsg = '';
     this._trajErrorMsg = '';
+    this._isRecalculatingTraj = false;
+    this._recalcTrajMissionId = null;
+    this._recalcTrajStatus = '';
+    this._recalcTrajError = '';
+    this._recalcTrajAbort = null;
+    this._recalcTrajSeq = 0;
     this._canSaveRuler = false;
+    this._activePickTarget = null;
     this._collapsedSections = new Set();
 
     this.surfaceRadius = MOON_CONFIG.RADIUS + 0.000026;
@@ -271,7 +294,74 @@ export class MissionPanel {
     }
   }
 
-  openMissionList() {
+  _categoryForMission(mission) {
+    if (mission && MISSION_CATEGORIES.includes(mission.category)) {
+      return mission.category;
+    }
+    if (mission?.id === 'mission-apollo-11') return 'historical';
+    if (mission?.id === 'mission-artemis-south') return 'future';
+    return 'custom';
+  }
+
+  _loadCustomCatalogSites() {
+    try {
+      if (typeof localStorage === 'undefined') return [];
+      const raw = localStorage.getItem(CUSTOM_SITES_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter(
+          (item) =>
+            item &&
+            typeof item.name === 'string' &&
+            Number.isFinite(Number(item.lat)) &&
+            Number.isFinite(Number(item.lon))
+        )
+        .map((item) => ({
+          id: String(item.id || `custom-${item.name}`),
+          name: item.name.trim(),
+          program: 'Custom',
+          agency: 'User',
+          status: 'custom',
+          date: typeof item.date === 'string' ? item.date : '',
+          region: typeof item.region === 'string' ? item.region : 'Custom landing site',
+          lat: Number(item.lat),
+          lon: Number(item.lon),
+          description: typeof item.description === 'string' ? item.description : '',
+          origin: 'custom',
+        }));
+    } catch {
+      return [];
+    }
+  }
+
+  _getPresetSitesForCategory(category) {
+    if (category === 'historical') {
+      return NASA_MOON_EXPLORATION_SITES.filter((s) => s.status === 'landed');
+    }
+    if (category === 'future') {
+      return NASA_MOON_EXPLORATION_SITES.filter((s) => s.status === 'planned');
+    }
+    return this._loadCustomCatalogSites();
+  }
+
+  _findCatalogSiteById(siteId) {
+    if (!siteId) return null;
+    return (
+      NASA_MOON_EXPLORATION_SITES.find((s) => s.id === siteId) ||
+      this._loadCustomCatalogSites().find((s) => s.id === siteId) ||
+      null
+    );
+  }
+
+  openMissionList(tab = null) {
+    if (tab && MISSION_CATEGORIES.includes(tab)) {
+      this._listTab = tab;
+    } else if (!MISSION_CATEGORIES.includes(this._listTab)) {
+      this._listTab = this._categoryForMission(this.getActiveMission());
+    }
+    this._cancelActivePick();
     this._panelView = 'list';
     this._isRenameOpen = false;
     this.render();
@@ -349,6 +439,9 @@ export class MissionPanel {
       lat: hasLatLon ? Number(lat).toFixed(5) : '',
       lon: hasLatLon ? Number(lon).toFixed(5) : '',
     };
+    this._selectedPresetSiteId = '';
+    this._lastAutoPresetName = '';
+    this._presetSiteTab = this._listTab === 'future' || this._listTab === 'historical' ? this._listTab : 'future';
 
     this._ensureTrajectoryCatalogLoaded();
     this.render();
@@ -420,6 +513,24 @@ export class MissionPanel {
         } else {
           this.render();
         }
+        const selected = this.missions.find((m) => m.id === missionId);
+        if (selected?.landingSite && typeof this.onFlyTo === 'function') {
+          this.onFlyTo(
+            selected.landingSite.lat,
+            selected.landingSite.lon,
+            this._categoryForMission(selected) === 'future' ? 45 : 65
+          );
+        }
+        return;
+      }
+
+      // Click on a catalog mission card in List mode -> activate + pull landing site
+      const catalogCard = e.target.closest('[data-catalog-site-id]');
+      if (catalogCard) {
+        this.activateCatalogMission(catalogCard.dataset.catalogSiteId, {
+          category: catalogCard.dataset.siteCategory || null,
+          openDetail: true,
+        });
         return;
       }
 
@@ -460,6 +571,28 @@ export class MissionPanel {
     this.contentHostEl.addEventListener('change', (e) => {
       if (e.target.closest('[data-form="new-mission"]')) {
         this._syncNewMissionDraftFromDom();
+        if (e.target.matches('[data-field="new-mission-site-preset"]')) {
+          const siteId = e.target.value;
+          this._selectedPresetSiteId = siteId;
+          const site = this._findCatalogSiteById(siteId);
+          if (site) {
+            this._newMissionDraft.lat = Number(site.lat).toFixed(5);
+            this._newMissionDraft.lon = Number(site.lon).toFixed(5);
+            if (!this._newMissionDraft.name.trim() || this._newMissionDraft.name === this._lastAutoPresetName) {
+              this._newMissionDraft.name = site.name;
+              this._lastAutoPresetName = site.name;
+            }
+            if (!this._newMissionDraft.notes.trim()) {
+              this._newMissionDraft.notes = site.description || site.region || '';
+            }
+            const parsedIso = parseCatalogSiteDateIso(site.date);
+            if (parsedIso) {
+              this._newMissionDraft.landingDateLocal = toDatetimeLocalUtc(parsedIso);
+            }
+            this.render();
+          }
+          return;
+        }
         if (e.target.matches('[data-field="new-mission-landing-mode"]')) {
           const mode = this._newMissionDraft.landingWindowMode;
           if (mode === 'flexible') {
@@ -490,6 +623,21 @@ export class MissionPanel {
         return;
       }
       const mission = this.getActiveMission();
+      if (e.target.matches('[data-field="target-site-preset"]')) {
+        const formEl = e.target.closest('[data-form="target-form"]');
+        const site = this._findCatalogSiteById(e.target.value);
+        if (formEl && site) {
+          const nameInput = formEl.querySelector('[data-field="target-name"]');
+          const latInput = formEl.querySelector('[data-field="target-lat"]');
+          const lonInput = formEl.querySelector('[data-field="target-lon"]');
+          const noteInput = formEl.querySelector('[data-field="target-note"]');
+          if (nameInput) nameInput.value = site.name;
+          if (latInput) latInput.value = String(Number(site.lat).toFixed(5));
+          if (lonInput) lonInput.value = String(Number(site.lon).toFixed(5));
+          if (noteInput) noteInput.value = [site.region, site.agency, site.date].filter(Boolean).join(' · ');
+        }
+        return;
+      }
       if (!mission) return;
 
       if (e.target.matches('[data-field="landing-date-input"]')) {
@@ -502,6 +650,7 @@ export class MissionPanel {
         const iso = parseDatetimeLocalUtc(e.target.value);
         this.updateActiveFlightDates({
           launchDateIso: iso,
+          dateSource: iso ? 'manual' : undefined,
         });
       } else if (e.target.matches('[data-field="transit-hours-input"]')) {
         const hrs = Number.parseFloat(e.target.value);
@@ -545,6 +694,7 @@ export class MissionPanel {
 
     switch (action) {
       case 'back-to-list':
+        this._cancelActivePick();
         this.openMissionList();
         break;
       case 'toggle-new-mission':
@@ -553,6 +703,7 @@ export class MissionPanel {
           this._isNewMissionFormOpen = false;
           this._newMissionFormError = '';
           this._newMissionErrorKind = null;
+          this._cancelActivePick('new-mission');
           this.render();
         } else {
           this.openNewMissionForm();
@@ -577,6 +728,7 @@ export class MissionPanel {
         this._isNewMissionAdvancedOpen = false;
         this._newMissionFormError = '';
         this._newMissionErrorKind = null;
+        this._cancelActivePick('new-mission');
         this.render();
         break;
       case 'retry-new-mission-flexible': {
@@ -609,10 +761,55 @@ export class MissionPanel {
         this._listSearchQuery = '';
         this.render();
         break;
+      case 'switch-list-tab': {
+        const tab = btn.dataset.listTab;
+        if (tab && MISSION_CATEGORIES.includes(tab)) {
+          this._listTab = tab;
+          this.render();
+        }
+        break;
+      }
+      case 'open-category-list': {
+        const tab = btn.dataset.listTab;
+        this.openMissionList(tab);
+        break;
+      }
+      case 'switch-preset-tab': {
+        const tab = btn.dataset.presetTab;
+        if (tab && MISSION_CATEGORIES.includes(tab)) {
+          if (this._isNewMissionFormOpen) {
+            this._syncNewMissionDraftFromDom();
+          }
+          this._presetSiteTab = tab;
+          this._selectedPresetSiteId = '';
+          this.render();
+        }
+        break;
+      }
+      case 'activate-catalog-mission':
+        this.activateCatalogMission(btn.dataset.siteId, {
+          category: btn.dataset.siteCategory || null,
+          openDetail: false,
+        });
+        break;
+      case 'open-catalog-mission':
+        this.activateCatalogMission(btn.dataset.siteId, {
+          category: btn.dataset.siteCategory || null,
+          openDetail: true,
+        });
+        break;
       case 'activate-mission': {
         const id = btn.dataset.missionId;
         if (id) {
           this.setActiveMission(id);
+          const targetMission = this.missions.find((m) => m.id === id);
+          if (targetMission?.landingSite && typeof this.onFlyTo === 'function') {
+            this.onFlyTo(
+              targetMission.landingSite.lat,
+              targetMission.landingSite.lon,
+              this._categoryForMission(targetMission) === 'future' ? 45 : 65
+            );
+          }
         }
         break;
       }
@@ -622,6 +819,14 @@ export class MissionPanel {
         this._detailTab = 'flight';
         if (id && id !== this.activeMissionId) {
           this.setActiveMission(id);
+          const targetMission = this.missions.find((m) => m.id === id);
+          if (targetMission?.landingSite && typeof this.onFlyTo === 'function') {
+            this.onFlyTo(
+              targetMission.landingSite.lat,
+              targetMission.landingSite.lon,
+              this._categoryForMission(targetMission) === 'future' ? 45 : 65
+            );
+          }
         } else {
           this.render();
         }
@@ -680,6 +885,7 @@ export class MissionPanel {
         this._collapsedSections.delete('flight-target');
         this._isTargetFormOpen = !this._isTargetFormOpen;
         this._targetFormError = '';
+        if (!this._isTargetFormOpen) this._cancelActivePick('target-form');
         this.render();
         if (this._isTargetFormOpen) {
           this.contentHostEl.querySelector('[data-field="target-name"]')?.focus();
@@ -697,6 +903,7 @@ export class MissionPanel {
       case 'cancel-target-form':
         this._isTargetFormOpen = false;
         this._targetFormError = '';
+        this._cancelActivePick('target-form');
         this.render();
         break;
       case 'target-from-camera':
@@ -721,6 +928,9 @@ export class MissionPanel {
           this._rebuildGlobeObjects();
           this._notifyMissionChange({ reason: 'target-cleared' });
         }
+        break;
+      case 'cancel-recalc-traj':
+        this.cancelTrajectoryRecalculation();
         break;
       case 'land-to-target':
         if (mission?.landingSite && typeof this.onLandToMissionTarget === 'function') {
@@ -835,6 +1045,7 @@ export class MissionPanel {
         this._collapsedSections.delete('surface-data');
         this._isAddPointFormOpen = !this._isAddPointFormOpen;
         this._pointFormError = '';
+        if (!this._isAddPointFormOpen) this._cancelActivePick('point-form');
         this.render();
         if (this._isAddPointFormOpen) {
           this.contentHostEl.querySelector('[data-field="point-name"]')?.focus();
@@ -843,7 +1054,11 @@ export class MissionPanel {
       case 'cancel-point-form':
         this._isAddPointFormOpen = false;
         this._pointFormError = '';
+        this._cancelActivePick('point-form');
         this.render();
+        break;
+      case 'pick-on-moon':
+        this._startPickOnMoon(btn.dataset.pickTarget);
         break;
       case 'add-point-from-camera':
         if (this.camera) {
@@ -1209,6 +1424,7 @@ export class MissionPanel {
           outcome: result.job.outcome || 'done',
           elapsedS: result.job.elapsed_s ?? null,
           request: result.request,
+          payload: genPayload,
           summaryStatus: result.summary?.summary?.status || null,
           generatedAt: new Date().toISOString(),
         },
@@ -1224,6 +1440,7 @@ export class MissionPanel {
       this.setActiveMission(created.id, {
         reason: 'create',
         generatedDoc: result.trajectory,
+        openTrajectoryView: true,
       });
     } catch (err) {
       this._isCreatingMission = false;
@@ -1358,19 +1575,218 @@ export class MissionPanel {
   setActiveMission(missionId, notifyMeta = {}) {
     if (!this.missions.some((m) => m.id === missionId)) return;
     this.activeMissionId = missionId;
+    this._presetSiteTab = this._categoryForMission(this.getActiveMission());
+    this._selectedPresetSiteId = '';
     this._isRenameOpen = false;
+    this._cancelActivePick();
     this._isTargetFormOpen = false;
     this._isAddPointFormOpen = false;
     this._trajStatusMsg = '';
     this._trajErrorMsg = '';
+    if (!this._isRecalculatingTraj || this._recalcTrajMissionId !== missionId) {
+      this._recalcTrajStatus = '';
+      this._recalcTrajError = '';
+    }
     this._persistState();
     this.render();
     this._rebuildGlobeObjects();
     this._notifyMissionChange({ reason: 'switch', ...notifyMeta });
   }
 
+  _cancelActivePick(onlyTarget = null) {
+    if (!this._activePickTarget) return;
+    if (onlyTarget && this._activePickTarget !== onlyTarget) return;
+    const prevTarget = this._activePickTarget;
+    this._activePickTarget = null;
+    this.onCancelPickOnMoon?.(prevTarget);
+    this._updatePickButtonsDom();
+  }
+
+  _updatePickButtonsDom() {
+    if (!this.contentHostEl) return;
+    const buttons = this.contentHostEl.querySelectorAll('[data-m-action="pick-on-moon"]');
+    for (const btn of buttons) {
+      const isPicking = this._activePickTarget === btn.dataset.pickTarget;
+      btn.classList.toggle('picking', isPicking);
+      btn.classList.toggle('accent', !isPicking);
+      const labelEl = btn.querySelector('[data-pick-label]');
+      if (labelEl) {
+        labelEl.textContent = isPicking ? 'CLICK ON MOON... (ESC)' : 'PICK ON MOON';
+      }
+    }
+  }
+
+  _startPickOnMoon(target) {
+    if (!target || typeof this.onPickOnMoon !== 'function') return;
+    if (this._activePickTarget === target) {
+      this._cancelActivePick(target);
+      return;
+    }
+    if (target === 'new-mission') {
+      this._syncNewMissionDraftFromDom();
+    }
+    const labels = {
+      'new-mission': 'Click on the Moon to set landing site coordinates',
+      'target-form': 'Click on the Moon to set landing target coordinates',
+      'point-form': 'Click on the Moon to set waypoint coordinates',
+    };
+    this._activePickTarget = target;
+    this._updatePickButtonsDom();
+
+    this.onPickOnMoon({
+      targetKey: `mission-${target}`,
+      label: labels[target] || 'Click on the Moon to pick coordinates',
+      onPick: ({ lat, lon }) => {
+        this._activePickTarget = null;
+        if (target === 'new-mission') {
+          this._newMissionDraft.lat = lat.toFixed(4);
+          this._newMissionDraft.lon = lon.toFixed(4);
+          this._selectedPresetSiteId = '';
+          this._newMissionFormError = '';
+          this.render();
+        } else if (target === 'target-form') {
+          const latEl = this.contentHostEl?.querySelector('[data-field="target-lat"]');
+          const lonEl = this.contentHostEl?.querySelector('[data-field="target-lon"]');
+          const nameEl = this.contentHostEl?.querySelector('[data-field="target-name"]');
+          if (latEl) latEl.value = lat.toFixed(4);
+          if (lonEl) lonEl.value = lon.toFixed(4);
+          if (nameEl && !nameEl.value.trim()) {
+            nameEl.value = `Landing Zone (${lat.toFixed(2)}°, ${lon.toFixed(2)}°)`;
+          }
+          this._targetFormError = '';
+          this._updatePickButtonsDom();
+        } else if (target === 'point-form') {
+          const latEl = this.contentHostEl?.querySelector('[data-field="point-lat"]');
+          const lonEl = this.contentHostEl?.querySelector('[data-field="point-lon"]');
+          const nameEl = this.contentHostEl?.querySelector('[data-field="point-name"]');
+          if (latEl) latEl.value = lat.toFixed(4);
+          if (lonEl) lonEl.value = lon.toFixed(4);
+          if (nameEl && !nameEl.value.trim()) {
+            nameEl.value = `Point (${lat.toFixed(2)}°, ${lon.toFixed(2)}°)`;
+          }
+          this._pointFormError = '';
+          this._updatePickButtonsDom();
+        }
+      },
+      onCancel: () => {
+        if (this._activePickTarget === target) {
+          this._activePickTarget = null;
+          this._updatePickButtonsDom();
+        }
+      },
+    });
+  }
+
+  _renderPickMoonButtonHtml(targetKey, disabledAttr = '') {
+    const isPicking = this._activePickTarget === targetKey;
+    return `
+      <button
+        type="button"
+        class="mission-mini-btn mission-pick-moon-btn ${isPicking ? 'picking' : 'accent'}"
+        data-m-action="pick-on-moon"
+        data-pick-target="${targetKey}"
+        title="Select coordinates directly on the 3D Moon surface"
+        ${disabledAttr}
+      >
+        <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <circle cx="8" cy="8" r="5" />
+          <path d="M8 1v2.5M8 12.5V15M1 8h2.5M12.5 8H15" />
+        </svg>
+        <span data-pick-label>${isPicking ? 'CLICK ON MOON... (ESC)' : 'PICK ON MOON'}</span>
+      </button>
+    `;
+  }
+
+  _findMissionForCatalogSite(site) {
+    if (!site) return null;
+    return (
+      this.missions.find((m) => {
+        if (m.modules?.siteId && m.modules.siteId === site.id) return true;
+        if (
+          m.landingSite &&
+          Math.abs(m.landingSite.lat - site.lat) < 0.0005 &&
+          Math.abs(m.landingSite.lon - site.lon) < 0.0005 &&
+          m.name.toLowerCase().includes(site.name.toLowerCase().split('(')[0].trim())
+        ) {
+          return true;
+        }
+        return false;
+      }) || null
+    );
+  }
+
+  activateCatalogMission(siteId, { category = null, openDetail = false } = {}) {
+    const site = this._findCatalogSiteById(siteId);
+    if (!site) return null;
+
+    const existing = this._findMissionForCatalogSite(site);
+    const zoom = site.status === 'planned' ? 45 : 70;
+
+    if (existing) {
+      if (!existing.landingSite) {
+        existing.landingSite = normalizeLandingSite({
+          name: site.name,
+          lat: site.lat,
+          lon: site.lon,
+          note: [site.region, site.agency, site.date].filter(Boolean).join(' · '),
+          visible: true,
+        });
+      }
+      if (openDetail) {
+        this._panelView = 'detail';
+        this._detailTab = 'flight';
+      }
+      this.setActiveMission(existing.id);
+      this.onFlyTo?.(site.lat, site.lon, zoom);
+      return existing;
+    }
+
+    const resolvedCategory =
+      category && MISSION_CATEGORIES.includes(category)
+        ? category
+        : site.status === 'planned'
+          ? 'future'
+          : site.status === 'custom'
+            ? 'custom'
+            : 'historical';
+    const landingDateIso = parseCatalogSiteDateIso(site.date);
+
+    const created = this.createMission({
+      name: site.name,
+      category: resolvedCategory,
+      landingSite: {
+        name: site.name,
+        lat: site.lat,
+        lon: site.lon,
+        note: [site.region, site.agency, site.date].filter(Boolean).join(' · '),
+        visible: true,
+      },
+      landingDateIso,
+      dateSource: landingDateIso ? 'manual' : 'unset',
+      notes: site.description || '',
+      siteMeta: {
+        siteId: site.id,
+        siteStatus: site.status || (resolvedCategory === 'future' ? 'planned' : resolvedCategory === 'historical' ? 'landed' : 'custom'),
+        program: site.program || '',
+        agency: site.agency || '',
+        region: site.region || '',
+      },
+    });
+
+    if (openDetail) {
+      this._panelView = 'detail';
+      this._detailTab = 'flight';
+    }
+    this.setActiveMission(created.id, { reason: 'create' });
+    this.onFlyTo?.(site.lat, site.lon, zoom);
+    return created;
+  }
+
   deleteMission(missionId) {
     if (this.missions.length <= 1) return;
+    if (this._recalcTrajMissionId === missionId && this._isRecalculatingTraj) {
+      this.cancelTrajectoryRecalculation();
+    }
     const target = this.missions.find((m) => m.id === missionId);
     if (target?.trajectory?.docId) {
       const stillReferenced = this.missions.some(
@@ -1391,7 +1807,7 @@ export class MissionPanel {
     this._notifyMissionChange({ reason: switchedActive ? 'switch' : 'delete' });
   }
 
-  setActiveLandingSite({ name, lat, lon, note = '' }) {
+  setActiveLandingSite({ name, lat, lon, note = '' }, { recalculate = true } = {}) {
     const mission = this.getActiveMission();
     if (!mission) return null;
     const normalized = normalizeLandingSite({ name, lat, lon, note, visible: true });
@@ -1402,7 +1818,154 @@ export class MissionPanel {
     this.render();
     this._rebuildGlobeObjects();
     this._notifyMissionChange({ reason: 'target-updated' });
+    if (recalculate !== false) {
+      this._recalculateTrajectoryForMission(mission);
+    }
     return mission.landingSite;
+  }
+
+  cancelTrajectoryRecalculation() {
+    if (!this._isRecalculatingTraj) return;
+    this._recalcTrajAbort?.abort();
+    this._recalcTrajAbort = null;
+    this._isRecalculatingTraj = false;
+    this._recalcTrajStatus = '';
+    this._recalcTrajError = 'Trajectory recalculation cancelled.';
+    this._trajStatusMsg = '';
+    this._trajErrorMsg = 'Trajectory recalculation cancelled.';
+    this.render();
+  }
+
+  async _recalculateTrajectoryForMission(mission) {
+    if (!mission?.landingSite) return;
+
+    if (this._recalcTrajAbort) {
+      this._recalcTrajAbort.abort();
+      this._recalcTrajAbort = null;
+    }
+
+    const seq = ++this._recalcTrajSeq;
+    const tlDate = this.getCurrentTimelineDate?.();
+    const fallbackDateIso =
+      tlDate instanceof Date && !Number.isNaN(tlDate.getTime())
+        ? tlDate.toISOString()
+        : new Date().toISOString();
+
+    const genPayload = buildTrajectoryRecalcPayload(mission, { fallbackDateIso });
+    if (!genPayload) return;
+
+    const abortCtrl = new AbortController();
+    this._recalcTrajAbort = abortCtrl;
+    this._isRecalculatingTraj = true;
+    this._recalcTrajMissionId = mission.id;
+    this._recalcTrajStatus = 'Recalculating trajectory for new target...';
+    this._recalcTrajError = '';
+    this._trajStatusMsg = this._recalcTrajStatus;
+    this._trajErrorMsg = '';
+    this.render();
+
+    try {
+      const result = await generateMissionTrajectory(genPayload, {
+        signal: abortCtrl.signal,
+        onProgress: (ev) => {
+          if (seq !== this._recalcTrajSeq || abortCtrl.signal.aborted) return;
+          if (ev?.message) {
+            this._recalcTrajStatus = ev.message;
+            this._trajStatusMsg = ev.message;
+            const statusEl = this.contentHostEl?.querySelector('[data-field="recalc-traj-status"]');
+            if (statusEl) statusEl.textContent = ev.message;
+            const trajStatusEl = this.contentHostEl?.querySelector('[data-field="traj-status-msg"]');
+            if (trajStatusEl) trajStatusEl.textContent = ev.message;
+          }
+        },
+      });
+
+      if (seq !== this._recalcTrajSeq || abortCtrl.signal.aborted) return;
+
+      const targetMission = this.missions.find((m) => m.id === mission.id);
+      if (!targetMission) return;
+
+      const docId = `traj-${targetMission.id}-${Date.now()}`;
+      await saveTrajectoryDoc(docId, result.trajectory);
+      if (seq !== this._recalcTrajSeq || abortCtrl.signal.aborted) {
+        deleteTrajectoryDoc(docId);
+        return;
+      }
+
+      const oldDocId = targetMission.trajectory?.docId;
+      if (oldDocId && oldDocId !== docId) {
+        const stillReferenced = this.missions.some(
+          (m) => m.id !== targetMission.id && m.trajectory?.docId === oldDocId
+        );
+        if (!stillReferenced) {
+          deleteTrajectoryDoc(oldDocId);
+        }
+      }
+
+      const schedule = extractScheduleFromGeneratedResult(result);
+      targetMission.trajectory = {
+        sourceType: 'uploaded',
+        url: null,
+        docId,
+        fileName: `trajectory-${result.job.job_id}.json`,
+        visible: targetMission.trajectory?.visible !== false,
+        meta: null,
+      };
+      targetMission.flight = {
+        launchDateIso: schedule.launchDateIso || targetMission.flight?.launchDateIso || null,
+        landingDateIso: schedule.landingDateIso || targetMission.flight?.landingDateIso || null,
+        transitDurationSec:
+          schedule.transitDurationSec ?? targetMission.flight?.transitDurationSec ?? null,
+        dateSource: 'trajectory',
+      };
+      if (!targetMission.modules || typeof targetMission.modules !== 'object') {
+        targetMission.modules = { notes: '' };
+      }
+      targetMission.modules.generation = {
+        jobId: result.job.job_id,
+        outcome: result.job.outcome || 'done',
+        elapsedS: result.job.elapsed_s ?? null,
+        request: result.request,
+        payload: genPayload,
+        summaryStatus: result.summary?.summary?.status || null,
+        generatedAt: new Date().toISOString(),
+      };
+
+      this._isRecalculatingTraj = false;
+      this._recalcTrajAbort = null;
+      this._recalcTrajStatus = '';
+      this._recalcTrajError = '';
+      this._trajStatusMsg = `Trajectory recalculated (${result.job.job_id}).`;
+      this._trajErrorMsg = '';
+      this._touchMission(targetMission);
+      this._persistState();
+      this.render();
+
+      if (
+        targetMission.id === this.activeMissionId &&
+        typeof this.onLoadMissionTrajectory === 'function'
+      ) {
+        await this.onLoadMissionTrajectory(targetMission, {
+          jsonDoc: result.trajectory,
+          syncFromMeta: true,
+          overwriteSiteIfUnset: false,
+          forceReload: true,
+        });
+      }
+    } catch (err) {
+      if (seq !== this._recalcTrajSeq) return;
+      this._isRecalculatingTraj = false;
+      this._recalcTrajAbort = null;
+      this._recalcTrajStatus = '';
+      if (err?.name === 'AbortError') {
+        return;
+      }
+      const msg = err?.message || 'Failed to recalculate trajectory for new target.';
+      this._recalcTrajError = msg;
+      this._trajStatusMsg = '';
+      this._trajErrorMsg = msg;
+      this.render();
+    }
   }
 
   updateActiveFlightDates({ launchDateIso = undefined, landingDateIso = undefined, dateSource = undefined }) {
@@ -1423,6 +1986,11 @@ export class MissionPanel {
     );
     if (computed !== null) {
       mission.flight.transitDurationSec = computed;
+    }
+    const savedPayload = mission.modules?.generation?.payload;
+    if (savedPayload && typeof savedPayload === 'object') {
+      if (launchDateIso !== undefined) savedPayload.launchDateIso = mission.flight.launchDateIso;
+      if (landingDateIso !== undefined) savedPayload.landingDateIso = mission.flight.landingDateIso;
     }
     this._touchMission(mission);
     this._persistState();
@@ -1445,6 +2013,11 @@ export class MissionPanel {
       if (Number.isFinite(launchMs)) {
         mission.flight.landingDateIso = new Date(launchMs + cleanSec * 1000).toISOString();
       }
+    }
+    const savedPayload = mission.modules?.generation?.payload;
+    if (savedPayload && typeof savedPayload === 'object') {
+      savedPayload.launchDateIso = mission.flight.launchDateIso;
+      savedPayload.landingDateIso = mission.flight.landingDateIso;
     }
     this._touchMission(mission);
     this._persistState();
@@ -1635,34 +2208,184 @@ export class MissionPanel {
     }
   }
 
-  _getFilteredMissions() {
+  _getMissionCatalogEntries(category) {
+    const cat = MISSION_CATEGORIES.includes(category) ? category : 'custom';
+    const userMissions = this.missions.filter((m) => this._categoryForMission(m) === cat);
+    const entries = userMissions.map((m) => ({
+      kind: 'mission',
+      category: cat,
+      mission: m,
+    }));
+
+    const catalogSites = this._getPresetSitesForCategory(cat);
+    for (const site of catalogSites) {
+      if (!this._findMissionForCatalogSite(site)) {
+        entries.push({
+          kind: 'catalog',
+          category: cat,
+          site,
+        });
+      }
+    }
+    return entries;
+  }
+
+  _getFilteredMissions(category = this._listTab) {
+    const entries = this._getMissionCatalogEntries(category);
     const q = this._listSearchQuery.trim().toLowerCase();
-    if (!q) return this.missions;
-    return this.missions.filter((m) => {
-      const hay = [
-        m.name,
-        m.landingSite?.name,
-        m.trajectory?.meta?.rocket,
-        m.trajectory?.fileName,
-        m.modules?.notes,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return hay.includes(q);
+    if (!q) return entries;
+    return entries.filter((entry) => {
+      const hay =
+        entry.kind === 'mission'
+          ? [
+              entry.mission.name,
+              entry.mission.landingSite?.name,
+              entry.mission.modules?.region,
+              entry.mission.modules?.program,
+              entry.mission.trajectory?.meta?.rocket,
+              entry.mission.trajectory?.fileName,
+              entry.mission.modules?.notes,
+            ]
+          : [
+              entry.site.name,
+              entry.site.region,
+              entry.site.program,
+              entry.site.agency,
+              entry.site.date,
+              entry.site.description,
+            ];
+      return hay.filter(Boolean).join(' ').toLowerCase().includes(q);
     });
+  }
+
+  _renderCategoryTabsHtml({ actionName, activeTab, includeCounts = true }) {
+    const esc = MissionPanel.escapeHtml;
+    const tabs = [
+      { id: 'historical', label: 'HISTORICAL' },
+      { id: 'custom', label: 'CUSTOM' },
+      { id: 'future', label: 'FUTURE' },
+    ];
+    return `
+      <div class="mission-subtabs mission-cat-tabs" role="tablist">
+        ${tabs
+          .map((t) => {
+            const count = includeCounts ? ` (${this._getMissionCatalogEntries(t.id).length})` : '';
+            const isActive = activeTab === t.id;
+            return `
+              <button
+                type="button"
+                class="mission-subtab-btn ${isActive ? 'active' : ''}"
+                data-m-action="${esc(actionName)}"
+                data-list-tab="${t.id}"
+                role="tab"
+                aria-selected="${isActive ? 'true' : 'false'}"
+              >${esc(t.label + count)}</button>
+            `;
+          })
+          .join('')}
+      </div>
+    `;
+  }
+
+  _renderPresetPickerHtml({ selectField, selectedSiteId = '' }) {
+    const esc = MissionPanel.escapeHtml;
+    const activeTab = MISSION_CATEGORIES.includes(this._presetSiteTab) ? this._presetSiteTab : 'historical';
+    const sites = this._getPresetSitesForCategory(activeTab);
+    const tabs = [
+      { id: 'historical', label: 'HISTORICAL' },
+      { id: 'custom', label: 'CUSTOM' },
+      { id: 'future', label: 'FUTURE' },
+    ];
+    return `
+      <div class="mission-preset-box">
+        <div class="mission-preset-head">
+          <span class="mission-field-label">PULL LANDING SITE</span>
+          <div class="mission-preset-pills">
+            ${tabs
+              .map(
+                (t) => `
+              <button
+                type="button"
+                class="mission-preset-pill ${activeTab === t.id ? 'active' : ''}"
+                data-m-action="switch-preset-tab"
+                data-preset-tab="${t.id}"
+              >${esc(t.label)}</button>
+            `
+              )
+              .join('')}
+          </div>
+        </div>
+        <select class="hud-input mission-select" data-field="${esc(selectField)}">
+          <option value="">${sites.length > 0 ? `Select ${activeTab} landing site (${sites.length})...` : `No ${activeTab} sites saved yet`}</option>
+          ${sites
+            .map((s) => {
+              const sel = selectedSiteId === s.id ? 'selected' : '';
+              return `<option value="${esc(s.id)}" ${sel}>${esc(s.name)} — ${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°</option>`;
+            })
+            .join('')}
+        </select>
+      </div>
+    `;
   }
 
   _renderMissionCardsHtml() {
     const esc = MissionPanel.escapeHtml;
-    const filtered = this._getFilteredMissions();
+    const activeCat = MISSION_CATEGORIES.includes(this._listTab) ? this._listTab : 'custom';
+    const filtered = this._getFilteredMissions(activeCat);
 
     if (filtered.length === 0) {
-      return `<div class="mission-empty-box">No missions match "${esc(this._listSearchQuery)}".</div>`;
+      if (activeCat === 'custom' && !this._listSearchQuery.trim()) {
+        return `
+          <div class="mission-empty-box">
+            No custom missions yet. Click <strong>+ NEW MISSION</strong> above or save a custom landing site to pull its coordinates here.
+          </div>
+        `;
+      }
+      return `<div class="mission-empty-box">No ${esc(activeCat)} missions match "${esc(this._listSearchQuery)}".</div>`;
     }
 
     return filtered
-      .map((m) => {
+      .map((entry) => {
+        if (entry.kind === 'catalog') {
+          const s = entry.site;
+          const coordLabel = `${s.name} (${formatCoords(s.lat, s.lon)})`;
+          const tagLabel = [s.program, s.agency].filter(Boolean).join(' · ') || activeCat.toUpperCase();
+          return `
+            <div class="mission-list-card catalog-card" data-catalog-site-id="${esc(s.id)}" data-site-category="${esc(activeCat)}">
+              <div class="mission-card-top">
+                <div class="mission-card-title-wrap">
+                  <span class="mission-status-dot catalog-${esc(activeCat)}" aria-hidden="true"></span>
+                  <span class="mission-card-name">${esc(s.name)}</span>
+                </div>
+                <div class="mission-card-actions">
+                  <button type="button" class="mission-mini-btn accent" data-m-action="activate-catalog-mission" data-site-id="${esc(s.id)}" data-site-category="${esc(activeCat)}" title="Activate mission &amp; pull landing site">SET</button>
+                  <button type="button" class="mission-mini-btn" data-m-action="open-catalog-mission" data-site-id="${esc(s.id)}" data-site-category="${esc(activeCat)}" title="Activate mission &amp; open workspace">OPEN</button>
+                </div>
+              </div>
+
+              <div class="mission-card-grid">
+                <div class="mission-kv">
+                  <span class="mission-kv-k">LANDING SITE</span>
+                  <span class="mission-kv-v val-nominal">${esc(coordLabel)}</span>
+                </div>
+                <div class="mission-kv">
+                  <span class="mission-kv-k">DATE / WINDOW</span>
+                  <span class="mission-kv-v">${esc(s.date || 'Custom')}</span>
+                </div>
+                <div class="mission-kv">
+                  <span class="mission-kv-k">REGION</span>
+                  <span class="mission-kv-v">${esc(s.region || 'Lunar Surface')}</span>
+                </div>
+                <div class="mission-kv">
+                  <span class="mission-kv-k">PROGRAM</span>
+                  <span class="mission-kv-v val-accent">${esc(tagLabel)}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+
+        const m = entry.mission;
         const isActive = m.id === this.activeMissionId;
         const targetLabel = m.landingSite
           ? `${m.landingSite.name} (${formatCoords(m.landingSite.lat, m.landingSite.lon)})`
@@ -1823,6 +2546,10 @@ export class MissionPanel {
         </div>
 
         <div class="mission-field-group">
+          ${this._renderPresetPickerHtml({ selectField: 'new-mission-site-preset', selectedSiteId: this._selectedPresetSiteId || '' })}
+        </div>
+
+        <div class="mission-field-group">
           <span class="mission-field-label">LANDING SITE COORDINATES</span>
           <div class="mission-coord-grid">
             <input
@@ -1848,6 +2575,7 @@ export class MissionPanel {
               ${busyAttr}
             />
           </div>
+          ${this._renderPickMoonButtonHtml('new-mission', busyAttr)}
         </div>
 
         <div class="mission-advanced-box">
@@ -2051,6 +2779,11 @@ export class MissionPanel {
         </div>
       </form>
 
+      ${this._renderCategoryTabsHtml({
+        actionName: 'switch-list-tab',
+        activeTab: MISSION_CATEGORIES.includes(this._listTab) ? this._listTab : 'custom',
+      })}
+
       <div class="mission-search-row">
         <input
           type="text"
@@ -2093,6 +2826,9 @@ export class MissionPanel {
     const isScheduleCollapsed = this._collapsedSections.has('flight-schedule');
     const isTrajCardCollapsed = this._collapsedSections.has('flight-traj');
     const isNotesCollapsed = this._collapsedSections.has('flight-notes');
+    const isRecalcForThis = this._isRecalculatingTraj && this._recalcTrajMissionId === mission.id;
+    const recalcErrForThis =
+      !isRecalcForThis && this._recalcTrajMissionId === mission.id ? this._recalcTrajError : '';
 
     return `
       <!-- 1. LANDING TARGET -->
@@ -2136,7 +2872,22 @@ export class MissionPanel {
         `
         }
 
+        ${
+          isRecalcForThis
+            ? `<div class="mission-recalc-row">
+                 <div class="mission-gen-status" data-field="recalc-traj-status">${esc(this._recalcTrajStatus || 'Recalculating trajectory...')}</div>
+                 <button type="button" class="mission-mini-btn danger" data-m-action="cancel-recalc-traj">CANCEL</button>
+               </div>`
+            : ''
+        }
+        ${
+          recalcErrForThis
+            ? `<div class="mission-form-error visible">${esc(recalcErrForThis)}</div>`
+            : ''
+        }
+
         <form class="mission-add-form ${targetFormClass}" data-form="target-form">
+          ${this._renderPresetPickerHtml({ selectField: 'target-site-preset' })}
           <input
             type="text"
             class="hud-input"
@@ -2167,6 +2918,7 @@ export class MissionPanel {
               value="${site ? esc(site.lon) : ''}"
             />
           </div>
+          ${this._renderPickMoonButtonHtml('target-form')}
           <input
             type="text"
             class="hud-input"
@@ -2356,7 +3108,7 @@ export class MissionPanel {
           ${hasTraj ? `<button type="button" class="mission-mini-btn danger" data-m-action="clear-traj">CLEAR</button>` : ''}
         </div>
 
-        ${this._trajStatusMsg ? `<div class="mission-traj-status">${esc(this._trajStatusMsg)}</div>` : ''}
+        ${this._trajStatusMsg ? `<div class="mission-traj-status" data-field="traj-status-msg">${esc(this._trajStatusMsg)}</div>` : ''}
         ${this._trajErrorMsg ? `<div class="mission-form-error visible">${esc(this._trajErrorMsg)}</div>` : ''}
         </div>
       </div>
@@ -2524,6 +3276,7 @@ export class MissionPanel {
             <input type="number" step="0.0001" min="-90" max="90" class="hud-input" data-field="point-lat" placeholder="Latitude (-90..90)" />
             <input type="number" step="0.0001" min="-180" max="180" class="hud-input" data-field="point-lon" placeholder="Longitude (-180..180)" />
           </div>
+          ${this._renderPickMoonButtonHtml('point-form')}
           <input type="text" class="hud-input" data-field="point-note" placeholder="Note (optional)" maxlength="120" />
           ${this._pointFormError ? `<div class="mission-form-error visible">${esc(this._pointFormError)}</div>` : ''}
           <div class="mission-coord-grid">
@@ -2584,6 +3337,11 @@ export class MissionPanel {
           </button>
         </div>
       </div>
+
+      ${this._renderCategoryTabsHtml({
+        actionName: 'open-category-list',
+        activeTab: this._categoryForMission(mission),
+      })}
 
       <div class="mission-hero-box">
         <div class="mission-hero-top">
@@ -2846,6 +3604,8 @@ export class MissionPanel {
   }
 
   dispose() {
+    this._createMissionAbort?.abort();
+    this._recalcTrajAbort?.abort();
     this._clearGlobeObjects();
     this._markerOuterGeo.dispose();
     this._markerInnerGeo.dispose();

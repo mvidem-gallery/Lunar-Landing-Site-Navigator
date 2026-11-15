@@ -1,12 +1,31 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ensureDriveFile,
+  getCachedFilePath,
+  getDriveFileEntry,
+  preferLocalAssets,
+  readDriveRange,
+  readLroWacTileFromDrive,
+} from '../gdrive/driveClient.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const CACHE_ROOT = path.join(PROJECT_ROOT, 'cache', 'lunar-dem');
 const LOCAL_WAC_DIR = path.join(PROJECT_ROOT, 'public', 'tiles', 'lro_wac');
 const LOCAL_LDEM64_PATH = path.join(CACHE_ROOT, 'ldem_64.img');
+const LWP_LDEM64_LOGICAL_PATH =
+  'trajectory/Lunar-Window-Navigator/launch-window-prediction/data/terrain/LDEM_64.IMG';
+const LWP_LDEM64_LOCAL_PATH = path.join(
+  PROJECT_ROOT,
+  'trajectory',
+  'Lunar-Window-Navigator',
+  'launch-window-prediction',
+  'data',
+  'terrain',
+  'LDEM_64.IMG'
+);
 
 const ephemMemCache = new Map();
 const ephemInFlight = new Map();
@@ -437,14 +456,49 @@ async function regionalTerrain(latitude, longitude, preferCompactRanges = false)
   const end = (lastRow + 1) * bytesPerRow - 1;
 
   let band = null;
-  // Якщо глобальний ldem_64.img завантажено локально — читаємо миттєво з диска
-  try {
-    const stat = await fsp.stat(LOCAL_LDEM64_PATH);
-    if (stat.size === LOLA64_BYTES) {
-      band = await readFileRange(LOCAL_LDEM64_PATH, start, end);
+  const driveEntry = getDriveFileEntry(LWP_LDEM64_LOGICAL_PATH);
+  const cachedDrivePath = getCachedFilePath(LWP_LDEM64_LOGICAL_PATH);
+
+  const tryReadLocalLdem = async () => {
+    for (const candidate of [LOCAL_LDEM64_PATH, LWP_LDEM64_LOCAL_PATH]) {
+      try {
+        const stat = await fsp.stat(candidate);
+        if (stat.size === LOLA64_BYTES) {
+          return await readFileRange(candidate, start, end);
+        }
+      } catch {
+        // ignore missing local file
+      }
     }
-  } catch {
-    band = null;
+    return null;
+  };
+
+  if (preferLocalAssets()) {
+    band = await tryReadLocalLdem();
+  }
+
+  if (!band && driveEntry) {
+    try {
+      const stat = await fsp.stat(cachedDrivePath);
+      if (!driveEntry.size || stat.size === driveEntry.size) {
+        band = await readFileRange(cachedDrivePath, start, end);
+      }
+    } catch {
+      ensureDriveFile(LWP_LDEM64_LOGICAL_PATH).catch((err) => {
+        console.warn(`[gdrive] LDEM_64.IMG cache warmup failed: ${err.message}`);
+      });
+      if (process.env.GOOGLE_DRIVE_API_KEY?.trim()) {
+        try {
+          band = await readDriveRange(driveEntry.fileId, start, end);
+        } catch {
+          band = null;
+        }
+      }
+    }
+  }
+
+  if (!band && !preferLocalAssets()) {
+    band = await tryReadLocalLdem();
   }
 
   let tile = null;
@@ -461,18 +515,36 @@ async function regionalTerrain(latitude, longitude, preferCompactRanges = false)
 
   if (!tile) {
     if (!band) {
-      const upstream = await fetch(LOLA64_URL, {
-        headers: { Range: `bytes=${start}-${end}` },
-        signal: AbortSignal.timeout(60000),
-      });
-      if (
-        upstream.status !== 206 ||
-        upstream.headers.get('Content-Range') !== `bytes ${start}-${end}/${rows * bytesPerRow}`
-      ) {
-        await upstream.body?.cancel();
+      let upstreamOk = false;
+      try {
+        const upstream = await fetch(LOLA64_URL, {
+          headers: { Range: `bytes=${start}-${end}` },
+          signal: AbortSignal.timeout(60000),
+        });
+        if (
+          upstream.status === 206 &&
+          upstream.headers.get('Content-Range') === `bytes ${start}-${end}/${rows * bytesPerRow}`
+        ) {
+          const fetched = new Uint8Array(await upstream.arrayBuffer());
+          if (fetched.byteLength === rowCount * bytesPerRow) {
+            band = fetched;
+            upstreamOk = true;
+          }
+        } else {
+          await upstream.body?.cancel();
+        }
+      } catch {
+        upstreamOk = false;
+      }
+      if (!upstreamOk && driveEntry) {
+        const downloaded = await ensureDriveFile(LWP_LDEM64_LOGICAL_PATH);
+        if (downloaded?.path) {
+          band = await readFileRange(downloaded.path, start, end);
+        }
+      }
+      if (!band) {
         throw new Error('LOLA archive did not return the requested elevation tile.');
       }
-      band = new Uint8Array(await upstream.arrayBuffer());
       if (band.byteLength !== rowCount * bytesPerRow) {
         throw new Error('Incomplete LOLA elevation tile.');
       }
@@ -836,18 +908,45 @@ export async function imageryTile(url) {
   let pending = imageryInFlight.get(memKey);
   if (!pending) {
     pending = (async () => {
-      // 1. Для екваторіальних тайлів спершу використовуємо локальний LRO WAC (Z2–Z8)
+      // 1. Для екваторіальних тайлів використовуємо Google Drive bundle або локальний LRO WAC (Z2–Z8)
       if (projection === 'EQ') {
-        const localWacPath = path.join(LOCAL_WAC_DIR, String(z), String(x), `${y}.jpg`);
+        const tryLocalWac = async () => {
+          const localWacPath = path.join(LOCAL_WAC_DIR, String(z), String(x), `${y}.jpg`);
+          try {
+            const data = await fsp.readFile(localWacPath);
+            if (data.byteLength > 0) {
+              return new Uint8Array(data);
+            }
+          } catch {
+            return null;
+          }
+          return null;
+        };
+
+        if (preferLocalAssets()) {
+          const localBytes = await tryLocalWac();
+          if (localBytes) {
+            lruSet(imageryMemCache, memKey, localBytes, 256);
+            return localBytes;
+          }
+        }
+
         try {
-          const data = await fsp.readFile(localWacPath);
-          if (data.byteLength > 0) {
-            const bytes = new Uint8Array(data);
-            lruSet(imageryMemCache, memKey, bytes, 256);
-            return bytes;
+          const driveBytes = await readLroWacTileFromDrive(z, x, y);
+          if (driveBytes && driveBytes.byteLength > 0) {
+            lruSet(imageryMemCache, memKey, driveBytes, 256);
+            return driveBytes;
           }
         } catch {
-          // Переходимо до кешу/онлайн
+          // Переходимо до локального/онлайн
+        }
+
+        if (!preferLocalAssets()) {
+          const localBytes = await tryLocalWac();
+          if (localBytes) {
+            lruSet(imageryMemCache, memKey, localBytes, 256);
+            return localBytes;
+          }
         }
       }
 

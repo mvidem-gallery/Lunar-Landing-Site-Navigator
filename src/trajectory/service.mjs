@@ -791,9 +791,20 @@ export async function runLwpApi(
 
   const fullArgs = [...runner.baseArgs, 'api', '--jobs-dir', jobsDir, ...apiArgs];
 
+  const childEnv = {
+    ...process.env,
+    ...(process.env.LWP_DRIVE_MANIFEST || process.env.GDRIVE_MANIFEST_PATH
+      ? {}
+      : { LWP_DRIVE_MANIFEST: path.join(PROJECT_ROOT, 'drive-manifest.json') }),
+    ...(process.env.LWP_GDRIVE_CACHE_DIR || process.env.GDRIVE_CACHE_DIR
+      ? {}
+      : { LWP_GDRIVE_CACHE_DIR: path.join(PROJECT_ROOT, 'cache', 'gdrive') }),
+  };
+
   return new Promise((resolve, reject) => {
     const child = spawn(runner.cmd, fullArgs, {
       cwd: runner.cwd,
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });

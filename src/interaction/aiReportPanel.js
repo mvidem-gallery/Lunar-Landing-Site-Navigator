@@ -362,7 +362,7 @@ export class AIReportPanel {
         <div class="ai-empty-state">
           <div class="ai-empty-title">NO LANDING TARGET FOR ACTIVE MISSION</div>
           <p class="ai-empty-desc">
-            Select a mission with a configured landing site or right-click on the lunar surface to create one, then open the AI report.
+            Select a mission with a configured landing site or right-click on the lunar surface to create one, then open the report.
           </p>
         </div>
       `

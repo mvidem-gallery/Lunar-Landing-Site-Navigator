@@ -58,7 +58,7 @@
             type="button"
             class="rail-btn rail-btn--ai"
             data-rail-tab="ai"
-            title="AI Landing Viability Dashboard (Lunar Report DSS)"
+            title="Landing Viability Report (Lunar Report DSS)"
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6">
               <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z" />
@@ -95,7 +95,22 @@
       <div id="left-drawer" class="left-drawer">
         <div class="drawer-top-header">
           <span id="left-drawer-title" class="drawer-title">Mission</span>
-          <span id="left-drawer-badge" class="drawer-badge">MISSION</span>
+          <div class="drawer-header-actions">
+            <span id="left-drawer-badge" class="drawer-badge">MISSION</span>
+            <button
+              type="button"
+              id="report-close-btn"
+              class="ls-close-btn drawer-report-close-btn"
+              title="Exit Report"
+              aria-label="Exit Report"
+              aria-hidden="true"
+              hidden
+            >
+              <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <!-- Tab 1: Missions -->
@@ -183,7 +198,7 @@
           </div>
         </div>
 
-        <!-- Tab 4: AI Report Dashboard -->
+        <!-- Tab 4: Report Dashboard -->
         <div id="tab-ai" class="drawer-tab-pane">
           <div id="ai-report-slot" class="drawer-slot-fill"></div>
         </div>
@@ -357,6 +372,8 @@
         class="right-simple-switch active"
         role="switch"
         aria-checked="true"
+        aria-hidden="true"
+        hidden
         title="Simple Trajectory Scale (compressed Earth–Moon gap). Turn off for full natural Earth–Moon distance."
       >
         <span class="simple-switch-label">SIMPLE</span>
@@ -636,6 +653,32 @@
       </div>
 
       <div id="timeline-mount"></div>
+    </div>
+
+    <!-- Mode Transition Loading HUD (3D Moon <-> Trajectory <-> Surface Return) -->
+    <div id="mode-transition-hud" class="mode-transition-hud" aria-live="polite" aria-hidden="true">
+      <div class="mode-transition-vignette"></div>
+      <div class="mode-transition-card">
+        <div class="mode-transition-spinner" aria-hidden="true">
+          <svg viewBox="0 0 44 44" width="38" height="38" fill="none">
+            <circle class="mt-ring-outer" cx="22" cy="22" r="18" stroke="currentColor" stroke-width="1.5" stroke-dasharray="18 8 6 8" />
+            <circle class="mt-ring-inner" cx="22" cy="22" r="11" stroke="#4db5ff" stroke-width="1.5" stroke-dasharray="28 16" />
+            <circle class="mt-core-dot" cx="22" cy="22" r="2.6" fill="#f4f7fa" />
+          </svg>
+        </div>
+        <div class="mode-transition-body">
+          <div class="mode-transition-route">
+            <span id="mode-transition-from" class="mt-mode-tag">LUNAR</span>
+            <span class="mt-arrow" aria-hidden="true">→</span>
+            <span id="mode-transition-to" class="mt-mode-tag mt-mode-tag--target">CISLUNAR</span>
+          </div>
+          <div id="mode-transition-title" class="mode-transition-title">TRANSITIONING ORBITAL FRAME</div>
+          <div id="mode-transition-subtitle" class="mode-transition-subtitle">Aligning cislunar trajectory telemetry...</div>
+          <div class="mode-transition-progress-track">
+            <div id="mode-transition-progress-fill" class="mode-transition-progress-fill"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

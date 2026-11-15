@@ -21,6 +21,14 @@ export class LunarHorizonModal {
   constructor() {
     this.isOpen = false;
     this.currentUrl = '';
+    this._openSeq = 0;
+    this._minRevealTimer = null;
+    this._fallbackTimer = null;
+    this._closeResetTimer = null;
+    this._stageTimers = [];
+    this._lastTargetData = null;
+    this.onOpenCallback = null;
+    this.onCloseCallback = null;
     this._buildDOM();
     this._bindEvents();
   }
@@ -61,6 +69,23 @@ export class LunarHorizonModal {
         </div>
       </div>
       <div class="lh-modal-frame-wrap">
+        <div class="lh-modal-loader" aria-live="polite">
+          <div class="lh-loader-card">
+            <div class="lh-loader-reticle" aria-hidden="true">
+              <svg viewBox="0 0 72 72" width="64" height="64" fill="none">
+                <circle class="lh-reticle-outer" cx="36" cy="36" r="30" stroke="currentColor" stroke-width="1.4" stroke-dasharray="16 8 5 8" />
+                <circle class="lh-reticle-inner" cx="36" cy="36" r="20" stroke="#4db5ff" stroke-width="1.5" stroke-dasharray="38 20" />
+                <path d="M16 44c6-5 13-7 20-7s14 2 20 7" stroke="#94a0b0" stroke-width="1.2" stroke-linecap="round" />
+                <circle class="lh-reticle-pulse" cx="36" cy="36" r="3.2" fill="#f4f7fa" />
+              </svg>
+            </div>
+            <div class="lh-loader-kicker">3D MOON → SURFACE LANDING VIEW</div>
+            <div class="lh-loader-title">INITIALIZING SURFACE SIMULATOR</div>
+            <div class="lh-loader-target" data-field="loader-target">—</div>
+            <div class="lh-loader-bar-track"><div class="lh-loader-bar-fill"></div></div>
+            <div class="lh-loader-status" data-field="loader-status">ACQUIRING TARGET EPHEMERIS...</div>
+          </div>
+        </div>
         <iframe
           class="lh-modal-iframe"
           title="Lunar Horizon Surface Simulator"
@@ -75,8 +100,18 @@ export class LunarHorizonModal {
     this.openTabLink = this.backdropEl.querySelector('[data-action="open-tab"]');
     this.closeBtn = this.backdropEl.querySelector('[data-action="close"]');
     this.iframeEl = this.backdropEl.querySelector('.lh-modal-iframe');
+    this.loaderTargetEl = this.backdropEl.querySelector('[data-field="loader-target"]');
+    this.loaderStatusEl = this.backdropEl.querySelector('[data-field="loader-status"]');
 
     document.body.appendChild(this.backdropEl);
+  }
+
+  onOpen(callback) {
+    this.onOpenCallback = callback;
+  }
+
+  onClose(callback) {
+    this.onCloseCallback = callback;
   }
 
   _bindEvents() {
@@ -86,6 +121,23 @@ export class LunarHorizonModal {
         this.close();
       }
     });
+  }
+
+  _clearTimers() {
+    if (this._minRevealTimer) {
+      clearTimeout(this._minRevealTimer);
+      this._minRevealTimer = null;
+    }
+    if (this._fallbackTimer) {
+      clearTimeout(this._fallbackTimer);
+      this._fallbackTimer = null;
+    }
+    if (this._closeResetTimer) {
+      clearTimeout(this._closeResetTimer);
+      this._closeResetTimer = null;
+    }
+    for (const id of this._stageTimers) clearTimeout(id);
+    this._stageTimers = [];
   }
 
   buildUrl(targetData = {}, options = {}) {
@@ -125,12 +177,18 @@ export class LunarHorizonModal {
   }
 
   open(targetData = {}, options = {}) {
+    this._clearTimers();
+    const seq = ++this._openSeq;
+    const openedAt = performance.now();
+
     const url = this.buildUrl(targetData, options);
     this.currentUrl = url;
+    this._lastTargetData = targetData;
 
     const lat = Number(targetData.lat) || 0;
     const lon = Number(targetData.lon) || 0;
-    this.coordsEl.textContent = formatCoordsLabel(lat, lon);
+    const coordsLabel = formatCoordsLabel(lat, lon);
+    this.coordsEl.textContent = coordsLabel;
 
     const metaParts = [];
     if (targetData.missionName) {
@@ -150,17 +208,67 @@ export class LunarHorizonModal {
     metaParts.push(`Landing UTC: ${formatUtcLocalInput(startDate.getTime()).replace('T', ' ')}`);
     this.metaEl.textContent = metaParts.join('  ·  ');
 
+    if (this.loaderTargetEl) {
+      const place = [targetData.pointName, targetData.missionName].filter(Boolean).join(' · ');
+      this.loaderTargetEl.textContent = place ? `${place} (${coordsLabel})` : coordsLabel;
+    }
+    if (this.loaderStatusEl) {
+      this.loaderStatusEl.textContent = 'ACQUIRING TARGET EPHEMERIS...';
+    }
+
+    this._stageTimers.push(
+      setTimeout(() => {
+        if (seq === this._openSeq && this.loaderStatusEl) {
+          this.loaderStatusEl.textContent = 'LOADING LOLA DEM TERRAIN MESH...';
+        }
+      }, 420),
+      setTimeout(() => {
+        if (seq === this._openSeq && this.loaderStatusEl) {
+          this.loaderStatusEl.textContent = 'CALIBRATING HORIZON & SOLAR VECTOR...';
+        }
+      }, 1050)
+    );
+
+    const finishLoading = () => {
+      if (seq !== this._openSeq) return;
+      if (this._fallbackTimer) {
+        clearTimeout(this._fallbackTimer);
+        this._fallbackTimer = null;
+      }
+      for (const id of this._stageTimers) clearTimeout(id);
+      this._stageTimers = [];
+      this.backdropEl.classList.remove('is-loading');
+    };
+
+    const onIframeLoad = () => {
+      if (seq !== this._openSeq) return;
+      if (this.iframeEl.getAttribute('src') === 'about:blank') return;
+      const remaining = Math.max(0, 650 - (performance.now() - openedAt));
+      this._minRevealTimer = setTimeout(finishLoading, remaining);
+    };
+
+    this.iframeEl.addEventListener('load', onIframeLoad, { once: true });
+    this._fallbackTimer = setTimeout(finishLoading, 10000);
+
     this.openTabLink.href = url;
+    this.backdropEl.classList.add('open', 'is-loading');
     this.iframeEl.src = url;
-    this.backdropEl.classList.add('open');
     this.isOpen = true;
     this.closeBtn.focus();
+    this.onOpenCallback?.(targetData);
   }
 
   close() {
     if (!this.isOpen) return;
-    this.backdropEl.classList.remove('open');
-    this.iframeEl.src = 'about:blank';
+    const seq = ++this._openSeq;
+    this._clearTimers();
+    this.backdropEl.classList.remove('open', 'is-loading');
     this.isOpen = false;
+    this._closeResetTimer = setTimeout(() => {
+      if (seq === this._openSeq && !this.isOpen) {
+        this.iframeEl.src = 'about:blank';
+      }
+    }, 280);
+    this.onCloseCallback?.(this._lastTargetData);
   }
 }

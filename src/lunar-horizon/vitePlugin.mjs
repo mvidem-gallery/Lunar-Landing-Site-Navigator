@@ -1,8 +1,10 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { ephemeris, terrainDetail, imageryTile } from './server.js';
+import { ensureDriveFile, hasDriveFile, preferLocalAssets } from '../gdrive/driveClient.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -39,11 +41,38 @@ const STATIC_CLIENT_FILES = [
 const STATIC_DATA_FILES = ['terrain.json', 'far.json', 'global-dem.bin'];
 const STATIC_ASSET_FILES = ['three.js', 'earth-blue-marble.webp', 'stars-hyg.bin'];
 
-function packPolarDem(name) {
+async function resolveLunarHorizonFile(logicalRelDir, fileName, localBaseDir) {
+  const localPath = path.join(localBaseDir, fileName);
+  const logicalPath = `${logicalRelDir}/${fileName}`;
+
+  if (preferLocalAssets() && fs.existsSync(localPath)) {
+    return localPath;
+  }
+  if (hasDriveFile(logicalPath)) {
+    const resolved = await ensureDriveFile(logicalPath);
+    if (resolved?.path && fs.existsSync(resolved.path)) {
+      return resolved.path;
+    }
+  }
+  if (fs.existsSync(localPath)) {
+    return localPath;
+  }
+  return null;
+}
+
+async function packPolarDem(name) {
   const metaPath = path.join(DATA_DIR, `${name}.json`);
-  const binPath = path.join(DATA_DIR, `${name}.bin`);
-  const { width, height } = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-  const source = fs.readFileSync(binPath);
+  const binPath = await resolveLunarHorizonFile(
+    'lunar-horizon-latest/lunar-horizon/data',
+    `${name}.bin`,
+    DATA_DIR
+  );
+  if (!fs.existsSync(metaPath) || !binPath) {
+    throw new Error(`Missing polar DEM assets for ${name} (check Google Drive manifest or local files)`);
+  }
+
+  const { width, height } = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
+  const source = await fsp.readFile(binPath);
   const floats = new Float32Array(source.buffer, source.byteOffset, width * height);
   const packed = Buffer.allocUnsafe(width * height * 2);
 
@@ -99,26 +128,32 @@ async function handleApiRoute(pathname, fullUrl, res) {
 
 export function lunarHorizonPlugin() {
   const packedCache = new Map();
+  const packedInFlight = new Map();
 
-  const getPackedAsset = (name) => {
-    if (!packedCache.has(name)) {
-      packedCache.set(name, packPolarDem(name));
-    }
-    return packedCache.get(name);
+  const getPackedAsset = async (name) => {
+    if (packedCache.has(name)) return packedCache.get(name);
+    if (packedInFlight.has(name)) return packedInFlight.get(name);
+    const work = packPolarDem(name).then((buf) => {
+      packedCache.set(name, buf);
+      packedInFlight.delete(name);
+      return buf;
+    }, (err) => {
+      packedInFlight.delete(name);
+      throw err;
+    });
+    packedInFlight.set(name, work);
+    return work;
   };
 
   return {
     name: 'lunar-horizon-integration',
 
     configureServer(server) {
-      // Фоновий прогрів стиснутих полярних карт у пам'ять, щоб не блокувати перший перехід на полюс
+      // Фоновий прогрів стиснутих полярних карт у пам'ять, якщо дані вже доступні
       setTimeout(() => {
-        try {
-          getPackedAsset('terrain');
-          getPackedAsset('far');
-        } catch {
+        Promise.all([getPackedAsset('terrain'), getPackedAsset('far')]).catch(() => {
           // Ігноруємо, якщо файли ще недоступні
-        }
+        });
       }, 150).unref?.();
 
       server.middlewares.use('/lunar-horizon', async (req, res, next) => {
@@ -142,7 +177,7 @@ export function lunarHorizonPlugin() {
 
           if (pathname === '/terrain.packed' || pathname === '/far.packed') {
             const name = pathname.slice(1, pathname.indexOf('.'));
-            const payload = getPackedAsset(name);
+            const payload = await getPackedAsset(name);
             res.writeHead(200, {
               'Content-Type': 'application/octet-stream',
               'Content-Length': payload.byteLength,
@@ -153,20 +188,30 @@ export function lunarHorizonPlugin() {
           }
 
           let filePath = null;
+          let isStaticDataOrAsset = false;
+
           if (pathname === '/' || pathname === '/index.html') {
             filePath = path.join(CLIENT_DIR, 'index.html');
           } else {
             const rel = pathname.replace(/^\/+/, '');
             if (!rel.includes('..')) {
-              const candidateClient = path.join(CLIENT_DIR, rel);
-              const candidateData = path.join(DATA_DIR, rel);
-              const candidateAsset = path.join(ASSETS_DIR, rel);
-              if (STATIC_CLIENT_FILES.includes(rel) && fs.existsSync(candidateClient)) {
-                filePath = candidateClient;
-              } else if (STATIC_ASSET_FILES.includes(rel) && fs.existsSync(candidateAsset)) {
-                filePath = candidateAsset;
-              } else if (STATIC_DATA_FILES.includes(rel) && fs.existsSync(candidateData)) {
-                filePath = candidateData;
+              if (STATIC_CLIENT_FILES.includes(rel)) {
+                const candidateClient = path.join(CLIENT_DIR, rel);
+                if (fs.existsSync(candidateClient)) filePath = candidateClient;
+              } else if (STATIC_ASSET_FILES.includes(rel)) {
+                filePath = await resolveLunarHorizonFile(
+                  'lunar-horizon-latest/lunar-horizon/assets',
+                  rel,
+                  ASSETS_DIR
+                );
+                isStaticDataOrAsset = true;
+              } else if (STATIC_DATA_FILES.includes(rel)) {
+                filePath = await resolveLunarHorizonFile(
+                  'lunar-horizon-latest/lunar-horizon/data',
+                  rel,
+                  DATA_DIR
+                );
+                isStaticDataOrAsset = true;
               }
             }
           }
@@ -178,6 +223,7 @@ export function lunarHorizonPlugin() {
 
           const ext = path.extname(filePath);
           const isStaticAsset =
+            isStaticDataOrAsset ||
             filePath.startsWith(ASSETS_DIR) ||
             ext === '.bin' ||
             ext === '.packed' ||
@@ -216,7 +262,7 @@ export function lunarHorizonPlugin() {
       });
     },
 
-    writeBundle(outputOptions) {
+    async writeBundle(outputOptions) {
       const outDir = outputOptions.dir || path.join(PROJECT_ROOT, 'dist');
       const targetDir = path.join(outDir, 'lunar-horizon');
       fs.mkdirSync(targetDir, { recursive: true });
@@ -226,15 +272,34 @@ export function lunarHorizonPlugin() {
       }
 
       for (const file of STATIC_ASSET_FILES) {
-        fs.copyFileSync(path.join(ASSETS_DIR, file), path.join(targetDir, file));
+        const srcPath = await resolveLunarHorizonFile(
+          'lunar-horizon-latest/lunar-horizon/assets',
+          file,
+          ASSETS_DIR
+        );
+        if (srcPath) {
+          fs.copyFileSync(srcPath, path.join(targetDir, file));
+        }
       }
 
       for (const file of STATIC_DATA_FILES) {
-        fs.copyFileSync(path.join(DATA_DIR, file), path.join(targetDir, file));
+        const srcPath = await resolveLunarHorizonFile(
+          'lunar-horizon-latest/lunar-horizon/data',
+          file,
+          DATA_DIR
+        );
+        if (srcPath) {
+          fs.copyFileSync(srcPath, path.join(targetDir, file));
+        }
       }
 
       for (const name of ['terrain', 'far']) {
-        fs.writeFileSync(path.join(targetDir, `${name}.packed`), getPackedAsset(name));
+        try {
+          const packed = await getPackedAsset(name);
+          fs.writeFileSync(path.join(targetDir, `${name}.packed`), packed);
+        } catch (err) {
+          console.warn(`[lunar-horizon] Skipping ${name}.packed in bundle: ${err.message}`);
+        }
       }
     },
   };
