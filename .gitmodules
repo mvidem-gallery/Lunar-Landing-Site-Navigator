@@ -1,6 +1,6 @@
 [submodule "report/lunar-report-dss"]
 	path = report/lunar-report-dss
-	url = https://github.com/ellseyy/lunar-report-dss.git
+	url = https://github.com/mvidem-gallery/lunar-report-dss.git
 [submodule "trajectory/Lunar-Window-Navigator"]
 	path = trajectory/Lunar-Window-Navigator
 	url = https://github.com/LightRem/Lunar-Window-Navigator
