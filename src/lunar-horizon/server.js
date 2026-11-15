@@ -484,15 +484,15 @@ async function regionalTerrain(latitude, longitude, preferCompactRanges = false)
         band = await readFileRange(cachedDrivePath, start, end);
       }
     } catch {
-      ensureDriveFile(LWP_LDEM64_LOGICAL_PATH).catch((err) => {
-        console.warn(`[gdrive] LDEM_64.IMG cache warmup failed: ${err.message}`);
-      });
-      if (process.env.GOOGLE_DRIVE_API_KEY?.trim()) {
-        try {
-          band = await readDriveRange(driveEntry.fileId, start, end);
-        } catch {
-          band = null;
-        }
+      try {
+        band = await readDriveRange(driveEntry.fileId, start, end);
+      } catch {
+        band = null;
+      }
+      if (!band || process.env.GDRIVE_PREFETCH_LDEM === '1') {
+        ensureDriveFile(LWP_LDEM64_LOGICAL_PATH).catch((err) => {
+          console.warn(`[gdrive] LDEM_64.IMG cache warmup failed: ${err.message}`);
+        });
       }
     }
   }

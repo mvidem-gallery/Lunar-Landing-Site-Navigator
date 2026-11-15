@@ -410,9 +410,8 @@ async function readLocalTarSlice(tarPath, offset, size) {
 /**
  * Reads a single LRO WAC tile (`z/x/y.jpg`) from Google Drive bundles.
  * - If the bundle `.tar` is already cached locally, reads the exact byte slice in <1 ms.
- * - Otherwise triggers a background download of that zoom's `.tar` bundle and attempts
- *   an immediate HTTP Range read from Google Drive (when supported, e.g. with GOOGLE_DRIVE_API_KEY).
- * - Returns `null` if no Drive bundle is configured or immediate slice isn't ready yet.
+ * - Otherwise checks per-tile cache (`cache/gdrive/tiles/lro_wac/...`) and reads the exact
+ *   byte slice directly from Google Drive via HTTP Range (with optional small-bundle prefetch).
  */
 export async function readLroWacTileFromDrive(z, x, y) {
   const bundle = getBundleForZoom(z);
@@ -433,22 +432,40 @@ export async function readLroWacTileFromDrive(z, x, y) {
         return await readLocalTarSlice(tarPath, offset, size);
       }
     } catch {
-      // Fall through to download
+      // Fall through to per-tile cache / Range
     }
   }
 
-  // Trigger background caching of the zoom bundle (deduplicated)
-  ensureBundleTar(bundle).catch((err) => {
-    console.warn(`[gdrive] Bundle ${bundle.bundleKey} background download failed: ${err.message}`);
-  });
-
-  // For smaller bundles (<= 350 MB, e.g. Z2-Z6) or when API key is configured, try direct Range first
-  if (process.env.GOOGLE_DRIVE_API_KEY?.trim()) {
+  const cachedTilePath = path.join(getCacheRoot(), 'tiles', 'lro_wac', String(z), String(x), `${y}.jpg`);
+  if (fs.existsSync(cachedTilePath)) {
     try {
-      return await readDriveRange(bundle.tarFileId, offset, offset + size - 1);
+      const stat = await fsp.stat(cachedTilePath);
+      if (stat.size === size) {
+        return new Uint8Array(await fsp.readFile(cachedTilePath));
+      }
     } catch {
-      // Fall through
+      // Fall through to Range
     }
+  }
+
+  // Pre-cache small bundles (<= 150 MB) or all bundles when explicitly requested
+  if ((bundle.tarSize || 0) <= 150 * 1024 * 1024 || process.env.GDRIVE_PREFETCH_BUNDLES === '1') {
+    ensureBundleTar(bundle).catch((err) => {
+      console.warn(`[gdrive] Bundle ${bundle.bundleKey} background download failed: ${err.message}`);
+    });
+  }
+
+  try {
+    const slice = await readDriveRange(bundle.tarFileId, offset, offset + size - 1);
+    if (slice && slice.byteLength === size) {
+      fsp
+        .mkdir(path.dirname(cachedTilePath), { recursive: true })
+        .then(() => fsp.writeFile(cachedTilePath, slice))
+        .catch(() => {});
+      return slice;
+    }
+  } catch {
+    // Fall through to full bundle download fallback
   }
 
   if ((bundle.tarSize || 0) <= 150 * 1024 * 1024) {

@@ -173,7 +173,9 @@ export class LunarHorizonModal {
       params.set('pointName', String(targetData.pointName));
     }
 
-    return `/lunar-horizon/index.html?${params.toString()}`;
+    const base = import.meta.env?.BASE_URL || '/';
+    const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+    return `${normalizedBase}lunar-horizon/index.html?${params.toString()}`;
   }
 
   open(targetData = {}, options = {}) {
