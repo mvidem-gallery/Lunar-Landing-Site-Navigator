@@ -15,7 +15,7 @@ export class MoonBuilder {
     const customUniforms = {
       uEarthDirection: { value: new THREE.Vector3(1, 0, 0) },
       uSunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      uShowEarthDisk: { value: true },
+      uShowEarthDisk: { value: false },
       uHorizonThreshold: { value: MOON_CONFIG.HORIZON_THRESHOLD },
       uShowIlluminationHeatmap: { value: false },
       uHeatmapOpacity: { value: OVERLAY_CONFIG.HEATMAP_OPACITY },

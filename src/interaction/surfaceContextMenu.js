@@ -10,10 +10,18 @@ export class SurfaceContextMenu {
    * @param {Function} [options.getSunDirection] - Повертає нормалізований THREE.Vector3 напрямку на Сонце
    * @param {Function} [options.getEarthDirection] - Повертає нормалізований THREE.Vector3 напрямку на Землю
    * @param {Function} options.onLandTo - Колбек виклику зовнішньої програми
+   * @param {Function} [options.onSaveLandingSite] - Колбек збереження точки посадки
    */
   constructor(
     canvasContainer,
-    { getHoveredCoords, getCurrentDate, getSunDirection, getEarthDirection, onLandTo }
+    {
+      getHoveredCoords,
+      getCurrentDate,
+      getSunDirection,
+      getEarthDirection,
+      onLandTo,
+      onSaveLandingSite,
+    }
   ) {
     this.container = canvasContainer;
     this.getHoveredCoords = getHoveredCoords;
@@ -21,6 +29,7 @@ export class SurfaceContextMenu {
     this.getSunDirection = getSunDirection;
     this.getEarthDirection = getEarthDirection;
     this.onLandTo = onLandTo;
+    this.onSaveLandingSite = onSaveLandingSite;
 
     this.activeTarget = null;
     this._pointerDownPos = { x: 0, y: 0 };
@@ -61,6 +70,10 @@ export class SurfaceContextMenu {
         <span>Land to</span>
         <span class="lunar-context-menu-item-icon">⌖</span>
       </button>
+      <button type="button" class="lunar-context-menu-item" data-action="save-landing-site">
+        <span>Зберегти точку посадки</span>
+        <span class="lunar-context-menu-item-icon">★</span>
+      </button>
     `;
 
     this.coordsEl = this.menuEl.querySelector('[data-field="coords"]');
@@ -69,6 +82,7 @@ export class SurfaceContextMenu {
     this.illumBarEl = this.menuEl.querySelector('[data-field="illum-bar"]');
     this.earthLosEl = this.menuEl.querySelector('[data-field="earth-los"]');
     this.landBtn = this.menuEl.querySelector('[data-action="land-to"]');
+    this.saveSiteBtn = this.menuEl.querySelector('[data-action="save-landing-site"]');
 
     document.body.appendChild(this.menuEl);
   }
@@ -162,6 +176,14 @@ export class SurfaceContextMenu {
       e.stopPropagation();
       if (this.activeTarget && typeof this.onLandTo === 'function') {
         this.onLandTo({ ...this.activeTarget });
+      }
+      this.hide();
+    });
+
+    this.saveSiteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.activeTarget && typeof this.onSaveLandingSite === 'function') {
+        this.onSaveLandingSite({ ...this.activeTarget });
       }
       this.hide();
     });

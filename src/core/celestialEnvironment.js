@@ -39,11 +39,11 @@ const STARFIELD_FRAGMENT_SHADER = /* glsl */ `
     float r = length(p);
     if (r > 1.0) discard;
 
-    float core = exp(-r * r * 14.0);
-    float halo = exp(-r * 3.8) * 0.38;
+    float core = exp(-r * r * 18.0);
+    float halo = exp(-r * 4.5) * 0.26;
     float intensity = (core + halo) * vBrightness;
 
-    vec3 starCol = mix(vColor, vec3(1.0), clamp(core * 0.65, 0.0, 1.0));
+    vec3 starCol = mix(vColor, vec3(1.0), clamp(core * 0.72, 0.0, 1.0));
     gl_FragColor = vec4(starCol * intensity, clamp(intensity, 0.0, 1.0));
   }
 `;
@@ -73,9 +73,15 @@ const MILKYWAY_FRAGMENT_SHADER = /* glsl */ `
   void main() {
     #include <logdepthbuf_fragment>
 
-    vec3 texel = texture2D(uMap, vUv).rgb;
-    vec3 shaped = pow(max(texel, vec3(0.0)), vec3(1.22)) * uIntensity;
+    // Інвертуємо u, щоб галактична карта ESA Gaia (l=0 у центрі, зростає ліворуч) збігалася з 3D-каталогом зсередини сфери
+    vec2 skyUv = vec2(1.0 - vUv.x, vUv.y);
+    vec3 texel = texture2D(uMap, skyUv).rgb;
+
+    // Зберігаємо справжню кольорову гаму ESA Gaia EDR3, прибираючи фонову засвітку
+    vec3 clean = max(texel - vec3(0.009), vec3(0.0));
+    vec3 shaped = pow(clean, vec3(1.38)) * uIntensity;
     gl_FragColor = vec4(shaped, 1.0);
+    #include <colorspace_fragment>
   }
 `;
 
@@ -463,9 +469,14 @@ export class CelestialEnvironment {
       colors[i * 3 + 2] = b;
 
       // Яскраві зорі (mag < 1) більші з м'яким ореолом, слабкі (mag 6..8) — точні цятки
-      const magNorm = THREE.MathUtils.clamp((8.2 - mag) / 9.7, 0.0, 1.0);
-      sizes[i] = 1.6 + Math.pow(magNorm, 2.15) * 10.5;
-      brightnesses[i] = THREE.MathUtils.clamp(0.18 + Math.pow(magNorm, 1.65) * 1.15, 0.16, 1.35);
+      const magRange = STARMAP_CONFIG.MAX_MAGNITUDE + 1.7;
+      const magNorm = THREE.MathUtils.clamp(
+        (STARMAP_CONFIG.MAX_MAGNITUDE + 0.2 - mag) / magRange,
+        0.0,
+        1.0
+      );
+      sizes[i] = 1.1 + Math.pow(magNorm, 2.4) * 5.8;
+      brightnesses[i] = THREE.MathUtils.clamp(0.14 + Math.pow(magNorm, 1.9) * 0.86, 0.12, 1.0);
     }
 
     const geom = new THREE.BufferGeometry();
@@ -522,14 +533,17 @@ export class CelestialEnvironment {
       },
       vertexShader: MILKYWAY_VERTEX_SHADER,
       fragmentShader: MILKYWAY_FRAGMENT_SHADER,
-      side: THREE.FrontSide,
+      side: THREE.BackSide,
       depthWrite: false,
     });
 
     const skyMesh = new THREE.Mesh(skyGeom, skyMat);
-    // Віддзеркалення scale.x = -1 + rotation.y = PI узгоджує панораму NASA SVS (RA=0 у центрі, зростає ліворуч) із 3D-каталогом
-    skyMesh.scale.x = -1;
-    skyMesh.rotation.y = Math.PI;
+    // Поворот IAU J2000 із галактичних координат (ESO eso0932a) в екваторіальні ICRF/J2000 нашої 3D-сцени
+    const galCenter = new THREE.Vector3(-0.05487556, -0.48383502, 0.87343709).normalize();
+    const galL90 = new THREE.Vector3(0.49410943, 0.74698224, 0.44482963).normalize();
+    const galNorthPole = new THREE.Vector3(-0.86766615, 0.45598378, 0.19807637).normalize();
+    const galToEquatorial = new THREE.Matrix4().makeBasis(galCenter, galNorthPole, galL90.negate());
+    skyMesh.quaternion.setFromRotationMatrix(galToEquatorial);
     skyMesh.renderOrder = -2;
     skyMesh.visible = false;
     skyMesh.name = 'MilkyWayBackdrop';

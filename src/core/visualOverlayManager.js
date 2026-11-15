@@ -13,7 +13,7 @@ export class VisualOverlayManager {
       this.uniforms.uSunDirection = { value: new THREE.Vector3(1, 0, 0) };
     }
     if (!this.uniforms.uShowEarthDisk) {
-      this.uniforms.uShowEarthDisk = { value: true };
+      this.uniforms.uShowEarthDisk = { value: false };
     }
     if (!this.uniforms.uHorizonThreshold) {
       this.uniforms.uHorizonThreshold = { value: MOON_CONFIG.HORIZON_THRESHOLD };

@@ -142,7 +142,7 @@ export class TileCache {
     await promise;
   }
 
-  requestTile(sourceSpec, z, x, y, priority, onLoad, onError) {
+  requestTile(sourceSpec, z, x, y, priority, onLoad, onError, bounds = null) {
     const key = `${sourceSpec.sourceId}_${z}_${y}_${x}`;
 
     if (!sourceSpec || !sourceSpec.url || this.failed.has(key)) {
@@ -171,6 +171,7 @@ export class TileCache {
       z,
       x,
       y,
+      bounds,
       priority: effectivePriority,
       callbacks: [{ onLoad, onError }],
       aborted: false,
@@ -181,7 +182,7 @@ export class TileCache {
     this.processQueue();
   }
 
-  buildUrl(urlTemplate, z, x, y, isWebMercatorQuad, isTms = false) {
+  buildUrl(urlTemplate, z, x, y, isWebMercatorQuad, isTms = false, bounds = null) {
     let targetX = x;
     let targetY = y;
 
@@ -195,10 +196,17 @@ export class TileCache {
       }
     }
 
-    return urlTemplate
+    let url = urlTemplate
       .replace('{z}', z)
       .replace('{x}', targetX)
       .replace('{y}', targetY);
+
+    if (bounds && url.includes('{bbox}')) {
+      const bbox = `${bounds.lonStart},${bounds.latStart},${bounds.lonEnd},${bounds.latEnd}`;
+      url = url.replace('{bbox}', bbox);
+    }
+
+    return url;
   }
 
   processQueue() {
@@ -214,7 +222,7 @@ export class TileCache {
   }
 
   async startEntryDownload(entry) {
-    if (entry.sourceSpec.isOverlay) {
+    if (entry.sourceSpec.isOverlay && entry.sourceSpec.trekDiscoveryQuery) {
       await this.resolveOverlayTemplate(entry.sourceSpec);
     }
 
@@ -234,7 +242,8 @@ export class TileCache {
       entry.x,
       entry.y,
       entry.sourceSpec.isWebMercatorQuad,
-      entry.sourceSpec.isTms
+      entry.sourceSpec.isTms,
+      entry.bounds
     );
 
     const handleSuccess = (texture) => {
@@ -297,10 +306,11 @@ export class TileCache {
             entry.x,
             entry.y,
             entry.sourceSpec.isWebMercatorQuad,
-            entry.sourceSpec.isTms
+            entry.sourceSpec.isTms,
+            entry.bounds
           );
           this.loader.load(fbUrl, handleSuccess, undefined, handleFinalFailure);
-        } else if (entry.sourceSpec.isOverlay) {
+        } else if (entry.sourceSpec.isOverlay && !primaryUrl.includes('REQUEST=GetMap')) {
           const altUrl = primaryUrl.endsWith('.jpg')
             ? primaryUrl.replace(/\.jpg$/, '.png')
             : primaryUrl.replace(/\.png$/, '.jpg');

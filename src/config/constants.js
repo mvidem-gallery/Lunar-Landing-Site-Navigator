@@ -12,9 +12,12 @@ export const LOD_CONFIG = {
   MAX_ZOOM: 12,
   TILE_SIZE_PX: 256,
   DEFAULT_LAYER: 'LRO_WAC_LOCAL',
-  CACHE_SIZE: 1024,
-  MAX_CONCURRENT_REQUESTS: 16,
-  SPLIT_THRESHOLD: 1.35,
+  CACHE_SIZE: 1536,
+  MAX_CONCURRENT_REQUESTS: 12,
+  MAX_LOCAL_CONCURRENT_REQUESTS: 24,
+  SPLIT_THRESHOLD: 3.0,
+  EDGE_SPLIT_ATTENUATION: 0.4,
+  STALE_INFLIGHT_FRAMES: 3,
 };
 
 export const OVERLAY_CONFIG = {
@@ -32,6 +35,11 @@ export const PROXY_CONFIG = {
   HORIZONS_API_REWRITE_PATH: '/api/horizons.api',
 };
 
+const KAGUYA_TC_WMTS_URL =
+  'https://trek.nasa.gov/tiles/Moon/EQ/Kaguya_TCortho_Mosaic_Global_4096ppd/1.0.0/default/default028mm/{z}/{y}/{x}.png';
+const KAGUYA_TC_USGS_WMS_URL =
+  'https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/earth/moon_simp_cyl.map&SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=KaguyaTC_Ortho&STYLES=&SRS=EPSG:4326&BBOX={bbox}&WIDTH=256&HEIGHT=256&FORMAT=image/png';
+
 export const MAP_LAYERS = {
   LRO_WAC_LOCAL: {
     id: 'LRO_WAC_LOCAL',
@@ -45,15 +53,43 @@ export const MAP_LAYERS = {
     maxZoom: 12,
     overlays: [
       {
-        id: 'OPM_LRO_GLOBAL_HD',
-        name: 'Глобальна LRO / Kaguya HD (Z9–Z11)',
-        url: `${PROXY_CONFIG.OPM_TILES_PATH}/{z}/{x}/{y}.png`,
-        fallbackUrl: `${PROXY_CONFIG.OPM_TILES_TARGET}/{z}/{x}/{y}.png`,
-        isWebMercatorQuad: true,
-        isTms: true,
+        id: 'KAGUYA_TC_ORTHO_WMTS',
+        name: 'NASA Moon Trek Kaguya TC Ortho 4096ppd (Z9–Z10)',
+        url: KAGUYA_TC_WMTS_URL,
+        fallbackUrl: KAGUYA_TC_USGS_WMS_URL,
+        isWebMercatorQuad: false,
+        isTransparent: false,
         minZoom: 9,
-        maxZoom: 11,
-        bounds: { minLon: -180, maxLon: 180, minLat: -85, maxLat: 85 },
+        maxZoom: 10,
+      },
+      {
+        id: 'KAGUYA_TC_ORTHO_WMS',
+        name: 'USGS Kaguya TC Ortho 4096ppd (Z11–Z12)',
+        url: KAGUYA_TC_USGS_WMS_URL,
+        isWebMercatorQuad: false,
+        isTransparent: false,
+        minZoom: 11,
+        maxZoom: 12,
+      },
+    ],
+  },
+  KAGUYA_TC_GLOBAL: {
+    id: 'KAGUYA_TC_GLOBAL',
+    name: 'Глобальна Kaguya TC Ortho 4096ppd (Z2–Z12)',
+    url: KAGUYA_TC_WMTS_URL,
+    fallbackUrl: KAGUYA_TC_USGS_WMS_URL,
+    isWebMercatorQuad: false,
+    baseMaxZoom: 10,
+    maxZoom: 12,
+    overlays: [
+      {
+        id: 'KAGUYA_TC_ORTHO_WMS',
+        name: 'USGS Kaguya TC Ortho 4096ppd (Z11–Z12)',
+        url: KAGUYA_TC_USGS_WMS_URL,
+        isWebMercatorQuad: false,
+        isTransparent: false,
+        minZoom: 11,
+        maxZoom: 12,
       },
     ],
   },
@@ -71,14 +107,14 @@ export const CELESTIAL_CONFIG = {
 };
 
 export const STARMAP_CONFIG = {
-  MILKYWAY_LOCAL_URL: '/stars/milkyway_4k.jpg',
+  MILKYWAY_LOCAL_URL: '/stars/gaia_edr3_4k.png',
   MILKYWAY_REMOTE_URL:
-    'https://thumb.wikimedia.org/wikipedia/commons/thumb/3/3f/Deep_Star_Maps_2020_%E2%80%93_Milkyway_2020_64k.jpg/3840px-Deep_Star_Maps_2020_%E2%80%93_Milkyway_2020_64k.jpg',
-  MILKYWAY_INTENSITY: 0.62,
+    'https://sci.esa.int/documents/33580/35361/Gaia_EDR3_flux_cartesian_4k.png/4648ec09-6c63-47a5-d0da-3ab3e0b42afe?version=1.0&t=1606986362680&download=true',
+  MILKYWAY_INTENSITY: 0.35,
   CATALOG_LOCAL_URL: '/stars/stars.8.json',
   CATALOG_REMOTE_URL:
     'https://raw.githubusercontent.com/ofrohn/d3-celestial/master/data/stars.8.json',
-  MAX_MAGNITUDE: 8.0,
+  MAX_MAGNITUDE: 6.2,
   ECLIPTIC_OBLIQUITY_DEG: 23.44,
 };
 

@@ -67,6 +67,7 @@ class QuadNode {
 
     const segs = this.z <= 4 ? 16 : this.z <= 8 ? 8 : 4;
     const isOverlay = Boolean(this.sourceSpec && this.sourceSpec.isOverlay);
+    const isTransparent = Boolean(this.sourceSpec && this.sourceSpec.isTransparent);
 
     const layer = MAP_LAYERS[this.manager.currentLayerId];
     const baseMax = layer ? (layer.baseMaxZoom ?? 8) : 8;
@@ -83,7 +84,7 @@ class QuadNode {
       thetaLength
     );
 
-    const material = this.manager.createTileMaterial(texture, isOverlay, this.z);
+    const material = this.manager.createTileMaterial(texture, isOverlay, this.z, isTransparent);
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.rotation.y = Math.PI;
     this.mesh.renderOrder = isOverlay ? 2 + (this.z - baseMax) : 1;
@@ -109,6 +110,12 @@ class QuadNode {
       () => {
         this.isLoading = false;
         this.hasFailed = true;
+      },
+      {
+        lonStart: this.lonStart,
+        lonEnd: this.lonEnd,
+        latStart: this.latStart,
+        latEnd: this.latEnd,
       }
     );
   }
@@ -208,6 +215,7 @@ export class QuadtreeTileManager {
         fallbackUrl: layer.fallbackUrl ?? null,
         isWebMercatorQuad: Boolean(layer.isWebMercatorQuad),
         isTms: Boolean(layer.isTms),
+        isTransparent: false,
         isOverlay: false,
         isLocal: layer.url.startsWith('/') || layer.url.startsWith('./'),
       };
@@ -229,6 +237,7 @@ export class QuadtreeTileManager {
             trekDiscoveryQuery: overlay.trekDiscoveryQuery ?? null,
             isWebMercatorQuad: Boolean(overlay.isWebMercatorQuad),
             isTms: Boolean(overlay.isTms),
+            isTransparent: Boolean(overlay.isTransparent),
             isOverlay: true,
             isLocal: false,
           };
@@ -282,15 +291,15 @@ export class QuadtreeTileManager {
     this.initRoots();
   }
 
-  createTileMaterial(texture, isOverlay = false, zoomLevel = 2) {
+  createTileMaterial(texture, isOverlay = false, zoomLevel = 2, isTransparent = false) {
     const material = new THREE.MeshStandardMaterial({
       map: texture,
       bumpMap: texture,
       bumpScale: MOON_CONFIG.BUMP_SCALE * (isOverlay ? 0.25 : 0.4),
       roughness: 0.95,
       metalness: 0.0,
-      transparent: isOverlay,
-      depthWrite: !isOverlay,
+      transparent: isTransparent,
+      depthWrite: !isTransparent,
       polygonOffset: isOverlay,
       polygonOffsetFactor: isOverlay ? -1 : 0,
       polygonOffsetUnits: isOverlay ? -zoomLevel : 0,
@@ -489,7 +498,10 @@ export class QuadtreeTileManager {
         return;
       }
 
-      const distToCamera = Math.max(0.00005, camPos.distanceTo(node.centerWorld) - node.boundingRadius * 0.5);
+      const distToCamera = Math.max(
+        0.00005,
+        camPos.distanceTo(node.centerWorld) - node.boundingRadius * 0.5
+      );
       const tileArcLength = (Math.PI * MOON_CONFIG.RADIUS) / Math.pow(2, node.z);
       const screenRatio = tileArcLength / distToCamera;
 
@@ -501,8 +513,32 @@ export class QuadtreeTileManager {
         }
 
         const isOverlayZone = node.z >= baseMaxZoom;
+        let allChildrenReady = true;
+        let anyChildFailed = false;
+        let hasTransparentChild = false;
 
-        if (isOverlayZone) {
+        for (const child of node.children) {
+          if (child.sourceSpec && child.sourceSpec.isTransparent) {
+            hasTransparentChild = true;
+          }
+          if (child.hasFailed) {
+            anyChildFailed = true;
+            continue;
+          }
+          if (!child.isReady) {
+            allChildrenReady = false;
+            child.requestTexture(distToCamera);
+          }
+        }
+
+        if (allChildrenReady && !anyChildFailed && !hasTransparentChild) {
+          // Усі 4 дочірні тайли завантажені і непрозорі — приховуємо батьківський тайл, щоб уникнути overdraw і z-fighting
+          if (node.mesh) node.mesh.visible = false;
+          for (const child of node.children) {
+            traverse(child);
+          }
+        } else {
+          // Батьківський тайл залишається видимим як підкладка, поки завантажуються дочірні
           if (node.isReady && node.mesh) {
             node.mesh.visible = true;
             highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
@@ -513,46 +549,15 @@ export class QuadtreeTileManager {
               if (child.mesh) child.mesh.visible = false;
               continue;
             }
-            if (child.sourceSpec && !child.isReady) {
-              child.requestTexture(distToCamera);
-              if (child.mesh) child.mesh.visible = false;
-            } else {
-              traverse(child);
-            }
-          }
-        } else {
-          let allChildrenReady = true;
-          let anyChildFailed = false;
-
-          for (const child of node.children) {
-            if (child.hasFailed) {
-              anyChildFailed = true;
-              break;
-            }
-            if (!child.isReady) {
-              allChildrenReady = false;
-              child.requestTexture(distToCamera);
-            }
-          }
-
-          if (anyChildFailed) {
-            node.merge();
-            if (node.isReady && node.mesh) {
-              node.mesh.visible = true;
-              highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
-            }
-          } else if (allChildrenReady) {
-            if (node.mesh) node.mesh.visible = false;
-            for (const child of node.children) {
-              traverse(child);
-            }
-          } else {
-            if (node.isReady && node.mesh) {
-              node.mesh.visible = true;
-              highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
-            }
-            for (const child of node.children) {
-              if (child.mesh) child.mesh.visible = false;
+            if (isOverlayZone) {
+              // Для Z8+ одразу показуємо вже готові тайли вищої точності поверх підкладки
+              if (child.isReady) {
+                traverse(child);
+              } else if (child.mesh) {
+                child.mesh.visible = false;
+              }
+            } else if (child.mesh) {
+              child.mesh.visible = false;
             }
           }
         }

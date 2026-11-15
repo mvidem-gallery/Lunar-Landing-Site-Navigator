@@ -39,8 +39,12 @@ export class SceneManager {
 
     this.targetRadialDistance = this.camera.position.length();
     this.onUpdateCallback = null;
+    this._flyAnim = null;
 
     this.setupSmoothAltitudeZoom();
+    this.renderer.domElement.addEventListener('pointerdown', () => {
+      this._flyAnim = null;
+    });
     window.addEventListener('resize', this.onResize.bind(this));
   }
 
@@ -49,6 +53,7 @@ export class SceneManager {
       'wheel',
       (event) => {
         event.preventDefault();
+        this._flyAnim = null;
 
         const currentAltitude = Math.max(
           this.minSurfaceClearance,
@@ -75,14 +80,14 @@ export class SceneManager {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  flyToCoordinates(latDeg, lonDeg, targetZoom = 1500) {
+  flyToCoordinates(latDeg, lonDeg, targetZoom = 65) {
     const latRad = THREE.MathUtils.degToRad(latDeg);
     const lonRad = THREE.MathUtils.degToRad(lonDeg);
 
-    const dir = new THREE.Vector3(
-      -Math.cos(latRad) * Math.cos(lonRad),
+    const targetDir = new THREE.Vector3(
+      Math.cos(latRad) * Math.cos(lonRad),
       Math.sin(latRad),
-      Math.cos(latRad) * Math.sin(lonRad)
+      -Math.cos(latRad) * Math.sin(lonRad)
     ).normalize();
 
     const targetAltitude = THREE.MathUtils.clamp(
@@ -91,10 +96,18 @@ export class SceneManager {
       this.maxRadialDistance - MOON_CONFIG.RADIUS
     );
 
+    const startDir = this.camera.position.clone().normalize();
     this.targetRadialDistance = MOON_CONFIG.RADIUS + targetAltitude;
-    this.camera.position.copy(dir.multiplyScalar(this.targetRadialDistance));
+    this._flyAnim = {
+      startDir,
+      targetDir,
+      startTime: performance.now(),
+      durationMs: 750,
+    };
     this.controls.target.set(0, 0, 0);
+    this.controls.enableDamping = false;
     this.controls.update();
+    this.controls.enableDamping = true;
   }
 
   updateNavigationDynamics() {
@@ -102,6 +115,24 @@ export class SceneManager {
 
     const smoothedDist = THREE.MathUtils.lerp(currentDist, this.targetRadialDistance, 0.14);
     if (currentDist > 0.0001) {
+      if (this._flyAnim) {
+        const elapsed = performance.now() - this._flyAnim.startTime;
+        const t = THREE.MathUtils.clamp(elapsed / this._flyAnim.durationMs, 0, 1);
+        const ease = 1 - Math.pow(1 - t, 3);
+
+        const { startDir, targetDir } = this._flyAnim;
+        const dot = THREE.MathUtils.clamp(startDir.dot(targetDir), -1, 1);
+        let interpDir;
+        if (dot < -0.999) {
+          const ref = Math.abs(startDir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+          const axis = new THREE.Vector3().crossVectors(startDir, ref).normalize();
+          interpDir = startDir.clone().applyAxisAngle(axis, Math.PI * ease);
+        } else {
+          interpDir = startDir.clone().lerp(targetDir, ease).normalize();
+        }
+        this.camera.position.copy(interpDir);
+        if (t >= 1) this._flyAnim = null;
+      }
       this.camera.position.setLength(smoothedDist);
     }
 

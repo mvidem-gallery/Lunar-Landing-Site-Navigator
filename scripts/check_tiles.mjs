@@ -1,14 +1,22 @@
-// Запуск: node check_tiles.mjs
+// Запуск: node scripts/check_tiles.mjs
 const SOURCES = [
   {
-    name: 'OpenPlanetary LRO (TMS)',
-    url: 'https://s3.amazonaws.com/opmbuilder/301_moon/tiles/w/hillshaded-albedo/{z}/{x}/{y}.png',
-    isWebMercatorQuad: true,
+    name: 'NASA Moon Trek LRO WAC 303ppd (Z2–Z8)',
+    url: 'https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg',
+    minZoom: 2,
+    maxZoom: 8,
   },
   {
-    name: 'NASA Moon Trek LRO WAC (Equirectangular)',
-    url: 'https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg',
-    isWebMercatorQuad: false,
+    name: 'NASA Moon Trek Kaguya TC Ortho 4096ppd (Z2–Z10)',
+    url: 'https://trek.nasa.gov/tiles/Moon/EQ/Kaguya_TCortho_Mosaic_Global_4096ppd/1.0.0/default/default028mm/{z}/{y}/{x}.png',
+    minZoom: 2,
+    maxZoom: 10,
+  },
+  {
+    name: 'USGS Astrogeology WMS Kaguya TC Ortho 4096ppd (Z11–Z12)',
+    url: 'https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/earth/moon_simp_cyl.map&SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=KaguyaTC_Ortho&STYLES=&SRS=EPSG:4326&BBOX={bbox}&WIDTH=256&HEIGHT=256&FORMAT=image/png',
+    minZoom: 11,
+    maxZoom: 12,
   },
 ];
 
@@ -19,30 +27,33 @@ const PROBES = [
   { label: '0°E, 75°N (Північ)', lon: 0, lat: 75 },
 ];
 
-function lonLatToTile(lon, lat, z, isWebMercatorQuad) {
-  const cols = isWebMercatorQuad ? Math.pow(2, z) : Math.pow(2, z + 1);
+function lonLatToTile(lon, lat, z) {
+  const cols = Math.pow(2, z + 1);
   const rows = Math.pow(2, z);
 
   const x = Math.min(cols - 1, Math.max(0, Math.floor(((lon + 180) / 360) * cols)));
-  let y = Math.min(rows - 1, Math.max(0, Math.floor(((90 - lat) / 180) * rows)));
+  const y = Math.min(rows - 1, Math.max(0, Math.floor(((90 - lat) / 180) * rows)));
 
-  if (isWebMercatorQuad) {
-    y = rows - 1 - y; // Інверсія TMS
-  }
-  return { x, y };
+  const lonStart = -180 + (x / cols) * 360;
+  const lonEnd = -180 + ((x + 1) / cols) * 360;
+  const latStart = 90 - ((y + 1) / rows) * 180;
+  const latEnd = 90 - (y / rows) * 180;
+
+  return { x, y, bbox: `${lonStart},${latStart},${lonEnd},${latEnd}` };
 }
 
 async function probeSources() {
   for (const src of SOURCES) {
     console.log(`\n=== Перевірка: ${src.name} ===`);
-    for (let z = 2; z <= 11; z++) {
+    for (let z = src.minZoom; z <= src.maxZoom; z++) {
       const results = await Promise.all(
         PROBES.map(async (p) => {
-          const { x, y } = lonLatToTile(p.lon, p.lat, z, src.isWebMercatorQuad);
+          const { x, y, bbox } = lonLatToTile(p.lon, p.lat, z);
           const targetUrl = src.url
             .replace('{z}', z)
             .replace('{x}', x)
-            .replace('{y}', y);
+            .replace('{y}', y)
+            .replace('{bbox}', bbox);
 
           try {
             const res = await fetch(targetUrl, { method: 'HEAD' });

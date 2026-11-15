@@ -10,6 +10,8 @@ import { RaycastController } from './interaction/raycastController.js';
 import { UIController } from './interaction/uiController.js';
 import { SurfaceContextMenu } from './interaction/surfaceContextMenu.js';
 import { CelestialTooltip } from './interaction/celestialTooltip.js';
+import { RulerTool } from './interaction/rulerTool.js';
+import { LandingSitesMenu } from './interaction/landingSitesMenu.js';
 import { MAP_LAYERS } from './config/constants.js';
 
 async function bootstrap() {
@@ -41,6 +43,24 @@ async function bootstrap() {
     const currentEarthDir = new THREE.Vector3(1, 0, 0);
 
     const celestialTooltip = new CelestialTooltip();
+    const rulerTool = new RulerTool({
+      scene: sceneManager.scene,
+      camera: sceneManager.camera,
+      domElement: container,
+      toggleButton: document.getElementById('ruler-toggle-btn'),
+    });
+
+    const landingSitesMenu = new LandingSitesMenu({
+      scene: sceneManager.scene,
+      camera: sceneManager.camera,
+      toggleButton: document.getElementById('landing-sites-toggle-btn'),
+      countBadgeEl: document.getElementById('landing-sites-count'),
+      chevronEl: document.getElementById('landing-sites-chevron'),
+      onFlyToSite: (site) => {
+        const targetZoom = site.status === 'planned' ? 45 : 70;
+        sceneManager.flyToCoordinates(site.lat, site.lon, targetZoom);
+      },
+    });
 
     const raycastController = new RaycastController(
       sceneManager.scene,
@@ -69,6 +89,9 @@ async function bootstrap() {
       getCurrentDate: () => currentSimulationDate,
       getSunDirection: () => currentSunDir,
       getEarthDirection: () => currentEarthDir,
+      onSaveLandingSite: (targetData) => {
+        landingSitesMenu.promptAndSaveTarget(targetData);
+      },
       onLandTo: (targetData) => {
         window.dispatchEvent(
           new CustomEvent('lunar:land-to', {
@@ -150,6 +173,8 @@ async function bootstrap() {
     sceneManager.startRenderLoop((camera, cameraTelemetry) => {
       const elapsedSeconds = performance.now() * 0.001;
       celestialEnv.update(camera, elapsedSeconds);
+      rulerTool.update(camera);
+      landingSitesMenu.update(camera);
       raycastController.update();
 
       const altitudeUnits = Math.max(0.001, camera.position.length() - 1.0);
@@ -158,7 +183,7 @@ async function bootstrap() {
 
       const actualMaxZoom = lodManager ? lodManager.update(camera) : 2;
       const pendingCount = lodManager
-        ? lodManager.cache.queue.length + lodManager.cache.activeRequests
+        ? lodManager.cache.pendingCount
         : 0;
 
       uiController.updateCameraZoom({
