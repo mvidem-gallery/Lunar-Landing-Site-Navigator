@@ -51,6 +51,7 @@ export class SceneManager {
     this.cislunarTarget = new THREE.Vector3();
     this._moonCenter = new THREE.Vector3(0, 0, 0);
     this._earthCenter = new THREE.Vector3(this.cislunarDistance, 0, 0);
+    this._cislunarFigure = null;
     this.cislunarCameraOffset = new THREE.Vector3();
     this.cislunarFocus = 'SYSTEM';
     this.minCislunarDistance = Math.max(7.5, this.cislunarDistance * 0.5);
@@ -107,7 +108,8 @@ export class SceneManager {
   }
 
   _updateCislunarFraming() {
-    const spanVec = new THREE.Vector3().subVectors(this._earthCenter, this._moonCenter);
+    const refMoon = (this.cislunarFocus === 'SYSTEM' && this._cislunarFigure?.refMoonCenter) || this._moonCenter;
+    const spanVec = new THREE.Vector3().subVectors(this._earthCenter, refMoon);
     const D = Math.max(1.0, spanVec.length() || this.cislunarDistance);
     const earthAxis =
       spanVec.lengthSq() > 1e-8
@@ -143,15 +145,58 @@ export class SceneManager {
       this.minCislunarDistance = rM + 0.015;
       this.maxCislunarDistance = Math.max(16.0, this.cislunarDistance * 1.2);
     } else {
-      // Центруємо огляд між Землею та Місяцем
-      this.cislunarTarget.copy(this._moonCenter).add(this._earthCenter).multiplyScalar(0.5);
+      // Центруємо огляд у геометричному центрі фігури (Земля + Місяць + траєкторія)
+      let frameD = D;
+      if (this._cislunarFigure) {
+        this.cislunarTarget.copy(this._cislunarFigure.center);
+        frameD = Math.max(D, this._cislunarFigure.radius * 1.45);
+        this.minCislunarDistance = Math.max(6.5, this._cislunarFigure.radius * 0.6);
+        this.maxCislunarDistance = Math.max(38.0, this._cislunarFigure.radius * 3.8);
+      } else {
+        const rE = EARTH_CONFIG.RADIUS;
+        const rM = MOON_CONFIG.RADIUS;
+        const minX = Math.min(this._earthCenter.x - rE, this._moonCenter.x - rM);
+        const maxX = Math.max(this._earthCenter.x + rE, this._moonCenter.x + rM);
+        const minY = Math.min(this._earthCenter.y - rE, this._moonCenter.y - rM);
+        const maxY = Math.max(this._earthCenter.y + rE, this._moonCenter.y + rM);
+        const minZ = Math.min(this._earthCenter.z - rE, this._moonCenter.z - rM);
+        const maxZ = Math.max(this._earthCenter.z + rE, this._moonCenter.z + rM);
+        this.cislunarTarget.set((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
+        this.minCislunarDistance = Math.max(7.5, this.cislunarDistance * 0.5);
+        this.maxCislunarDistance = Math.max(38.0, this.cislunarDistance * 2.6);
+      }
       this.cislunarCameraOffset
         .copy(earthAxis)
-        .multiplyScalar(-D * 0.25)
-        .addScaledVector(camUp, D * 0.42)
-        .addScaledVector(sideAxis, D * 1.75);
-      this.minCislunarDistance = Math.max(7.5, this.cislunarDistance * 0.5);
-      this.maxCislunarDistance = Math.max(38.0, this.cislunarDistance * 2.6);
+        .multiplyScalar(-frameD * 0.25)
+        .addScaledVector(camUp, frameD * 0.42)
+        .addScaledVector(sideAxis, frameD * 1.75);
+    }
+  }
+
+  setCislunarFigure(figure, { animate = false } = {}) {
+    if (figure && Array.isArray(figure.center)) {
+      this._cislunarFigure = {
+        center: new THREE.Vector3(figure.center[0], figure.center[1], figure.center[2]),
+        radius: Number.isFinite(figure.radius) ? figure.radius : this.cislunarDistance * 0.75,
+        refMoonCenter: Array.isArray(figure.refMoonCenter)
+          ? new THREE.Vector3(figure.refMoonCenter[0], figure.refMoonCenter[1], figure.refMoonCenter[2])
+          : null,
+      };
+    } else {
+      this._cislunarFigure = null;
+    }
+
+    this._updateCislunarFraming();
+    if (this.viewMode === VIEW_MODES.CISLUNAR && this.cislunarFocus === 'SYSTEM') {
+      if (animate) {
+        this.setCislunarFocus('SYSTEM', { animate: true });
+      } else {
+        this.minRadialDistance = this.minCislunarDistance;
+        this.maxRadialDistance = this.maxCislunarDistance;
+        this.controls.minDistance = this.minRadialDistance;
+        this.controls.maxDistance = this.maxRadialDistance;
+        this._desiredTarget.copy(this.cislunarTarget);
+      }
     }
   }
 
@@ -486,8 +531,13 @@ export class SceneManager {
   _clampCameraSpaceBoundaries() {
     if (this.viewMode === VIEW_MODES.CISLUNAR) {
       // Обмежуємо панорамування цілі межами земно-місячної системи, щоб не полетіти у відкритий космос
-      this._tmpSystemCenter.copy(this._moonCenter).add(this._earthCenter).multiplyScalar(0.5);
-      const halfSpan = 0.5 * this._earthCenter.distanceTo(this._moonCenter);
+      let halfSpan = 0.5 * this._earthCenter.distanceTo(this._moonCenter);
+      if (this._cislunarFigure) {
+        this._tmpSystemCenter.copy(this._cislunarFigure.center);
+        halfSpan = Math.max(halfSpan, this._cislunarFigure.radius);
+      } else {
+        this._tmpSystemCenter.copy(this._moonCenter).add(this._earthCenter).multiplyScalar(0.5);
+      }
       const maxPanRadius = halfSpan + EARTH_CONFIG.RADIUS + 7.5;
 
       this._tmpCollisionVec.subVectors(this.controls.target, this._tmpSystemCenter);
@@ -549,9 +599,11 @@ export class SceneManager {
       const interpDir = this._interpolateDirection(startDir, targetDir, ease);
       const interpDist = THREE.MathUtils.lerp(startDist, targetDist, ease);
       this.camera.position.copy(this.controls.target).addScaledVector(interpDir, interpDist);
+      this.camera.lookAt(this.controls.target);
 
       if (t >= 1) {
         this.controls.target.copy(targetPoint);
+        this.camera.lookAt(this.controls.target);
         this._flyAnim = null;
       }
     } else {

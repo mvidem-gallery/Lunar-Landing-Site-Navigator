@@ -1,0 +1,99 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lunar Horizon · Lunar mission planning</title><link rel="preload" href="./global-dem.bin" as="fetch" crossorigin><link rel="stylesheet" href="./style.css?v=workspace-v6"></head>
+<body class="lunar-app">
+<header class="app-toolbar">
+  <div class="app-identity">
+    <span class="brand">◐ Lunar Horizon</span>
+    <span id="coordinates">Terrain explorer</span>
+    <span id="compass" class="compass">N · 000°</span>
+  </div>
+  <nav class="view-tools" aria-label="Scene controls">
+    <div class="tool-group" role="group" aria-label="Mission panels">
+      <button id="parametersToggle" type="button" aria-expanded="true" aria-controls="missionParameters"><span aria-hidden="true">☷</span> Mission</button>
+      <button id="missionInfo" type="button" aria-expanded="false" aria-controls="missionInfoPanel"><span aria-hidden="true">ⓘ</span> Results</button>
+    </div>
+    <div class="tool-group" role="group" aria-label="Point the camera">
+      <button id="lookSun" type="button" title="Find the Sun"><span aria-hidden="true">☼</span> Sun</button>
+      <button id="lookEarth" type="button" title="Find Earth"><span aria-hidden="true">◉</span> Earth</button>
+      <button id="lookNorth" type="button" title="Face north"><span aria-hidden="true">↑</span> North</button>
+      <button id="inspectLander" type="button" aria-pressed="false" title="Orbit around the lander">Lander</button>
+    </div>
+    <div class="tool-group" role="group" aria-label="Display options">
+      <button id="imagery" type="button" aria-pressed="true">Imagery</button>
+      <button id="reliefLight" type="button" aria-pressed="false">Terrain light</button>
+      <button id="wire" type="button" aria-pressed="false">Wireframe</button>
+      <button id="discScale" type="button" aria-pressed="true" title="Toggle between 3× display and true angular size">Discs ×3</button>
+    </div>
+    <button id="about" type="button" title="Data sources and accuracy" aria-label="Data and accuracy">?</button>
+  </nav>
+</header>
+<main class="app-main">
+<div class="scene" id="scene">
+  <div id="canvas"></div>
+  <div id="objectLabel" class="object-label">EARTH</div>
+  <div id="sunLabel" class="object-label sun-label">SUN</div>
+<aside class="sidebar mission-parameters" id="missionParameters" aria-labelledby="missionParametersTitle"><header class="panel-heading"><h1 id="missionParametersTitle">Mission parameters</h1><button id="closeParameters" type="button" aria-label="Hide mission parameters">×</button></header><div class="site-card"><strong>NASA / LOLA elevation data</strong><span id="demResolution">Global coverage</span></div>
+<form id="mission"><div class="row"><label>Latitude, °<input id="lat" type="text" inputmode="decimal" value="-89.45" aria-describedby="coordinateHelp" spellcheck="false" required></label><label>Longitude E, °<input id="lon" type="text" inputmode="decimal" value="30" aria-describedby="coordinateHelp" spellcheck="false" required></label></div><p id="coordinateHelp" class="coordinate-help">Decimal degrees: 12.5 or 12,5. Negative means south or west. Omit the ° symbol.</p><label>Observer height, m<input id="height" type="number" value="1.7" step="0.1" min="0.1" max="100" aria-describedby="heightHelp" required></label><p id="heightHelp" class="coordinate-help">Height used to calculate Sun and Earth visibility. Use camera lift to change your viewing position.</p><label>Landing <span class="utc">UTC</span><input id="start" type="datetime-local" value="2026-11-14T00:00" required></label><label>Mission end <span class="utc">UTC</span><input id="end" type="datetime-local" value="2026-12-14T00:00" required></label><label>Darkness endurance, days<input id="darkLimit" type="text" inputmode="decimal" value="3" aria-describedby="darkHelp"></label><p id="darkHelp" class="coordinate-help">Maximum consecutive time without direct sunlight. Fractional days are allowed.</p><label>Ephemeris time step<select id="step"><option value="10">10 minutes · standard</option><option value="1">1 minute · detailed</option><option value="30">30 minutes · fast</option><option value="60">1 hour</option></select></label><button class="primary" id="calculate">Calculate mission <span>↗</span></button></form><section class="suitability" aria-label="Mission suitability" aria-live="polite"><strong id="suitabilityTitle">Mission suitability</strong><p id="darkResult">Waiting for calculation.</p><p id="earthOutage"></p><p id="alternative"></p><button id="applyWindow" type="button" hidden>Apply suggested dates</button><button id="retryWindow" type="button" hidden>Retry date search</button></section><div class="source-note">Latitude: from −90° to 90°<br>East longitude: from −180° to 180°<br>Ephemerides: NASA / JPL Horizons<br>Reference frame: MOON_ME</div></aside>
+<aside class="mission-info-panel" id="missionInfoPanel" aria-labelledby="missionInfoTitle" hidden>
+<header><h2 id="missionInfoTitle">Mission information</h2><button type="button" id="closeMissionInfo" aria-label="Close mission information">×</button></header>
+<section class="suitability mission-date-analysis" id="missionDateAnalysis" aria-labelledby="missionDateTitle">
+<h3 id="missionDateTitle">Date analysis</h3>
+<p id="missionDateRange"></p>
+<strong id="panelSuitability"></strong>
+<p id="panelDarkness"></p><p id="panelOutage"></p><p id="panelAlternative"></p>
+<button id="panelApplyWindow" type="button" hidden>Apply suggested dates</button>
+<button id="panelRetryWindow" type="button" hidden>Retry date search</button>
+</section><div class="metrics"><article><div class="metric-title"><span class="sun-icon">☼</span> SUN <span id="sunState" class="state">—</span></div><div class="metric-number"><span id="sunEl">—</span><small>above horizontal</small></div><div class="metric-detail">Angle to slope normal <strong id="incidence">—</strong></div><div class="metric-detail">Angular diameter <strong id="sunDiameter">—</strong></div><div class="metric-detail">Azimuth <strong id="sunAz">—</strong></div></article><article><div class="metric-title"><span class="earth-icon">◉</span> EARTH <span id="earthState" class="state">—</span></div><div class="metric-number"><span id="earthEl">—</span><small>above horizontal</small></div><div class="metric-detail">Angular diameter <strong id="earthDiameter">—</strong></div><div class="metric-detail">Distance <strong id="distance">—</strong></div><div class="metric-detail">Signal → / ↔ <strong id="delay">—</strong></div></article><article><div class="metric-title">MISSION SUMMARY <span class="state">ESTIMATE</span></div><div class="total-row"><span><i class="swatch sun"></i>Sunlight</span><strong id="sunTotal">—</strong></div><div class="total-row"><span><i class="swatch earth"></i>Earth visibility</span><strong id="earthTotal">—</strong></div><div class="total-row"><span><i class="swatch both"></i>Both available</span><strong id="bothTotal">—</strong></div><button class="text-button" id="export" disabled>Download mission CSV ↓</button></article></div></aside>
+<section class="scene-console" id="sceneConsole" aria-label="Mission timeline and camera">
+  <button id="consoleToggle" class="console-toggle" type="button" aria-expanded="true" aria-controls="consoleContent" aria-label="Hide timeline and camera controls" title="Hide timeline and camera controls"><span aria-hidden="true"></span></button>
+  <div id="consoleContent">
+  <div class="scene-readout">
+    <span id="dataBadge" class="badge">Real DEM · 3D</span>
+    <span id="imageryStatus">Loading orbital imagery…</span>
+    <span id="fovLabel">FIELD OF VIEW 65°</span>
+  </div>
+  <div id="status" role="status">Loading real terrain…</div>
+  <div class="loading-row" id="missionLoadingRow">
+    <progress id="missionProgress" aria-label="Mission loading progress"></progress>
+    <span id="missionProgressCount"></span>
+  </div>
+  <div class="loading-row imagery-loading-row" id="imageryLoadingRow" hidden>
+    <progress id="imageryProgress" aria-label="Orbital imagery loading progress"></progress>
+    <span id="imageryProgressCount"></span>
+  </div>
+  <div class="console-controls">
+    <div class="timeline-controls">
+      <div class="console-heading">
+        <label for="time">Mission time <span id="currentTime">— UTC</span></label>
+        <div class="play-controls"><button id="play" type="button" disabled aria-label="Play">▶</button><select id="speed" aria-label="Playback speed"><option value="3600">1 hr / s</option><option value="21600" selected>6 hr / s</option><option value="86400">1 day / s</option></select></div>
+      </div>
+      <input id="time" type="range" min="0" max="1000" value="0" disabled>
+      <div class="time-labels"><span id="startLabel">Landing</span><span id="missionDuration">—</span><span id="endLabel">Mission end</span></div>
+      <div class="timeline-tracks">
+        <span class="track-name sun-track">Sun</span>
+        <canvas class="track-bar sun-track" id="sunTrack" height="12" aria-label="Sunlight intervals"></canvas>
+        <span class="track-total sun-track" id="timelineSunTotal">—</span>
+        <span class="track-name earth-track">Earth</span>
+        <canvas class="track-bar earth-track" id="earthTrack" height="12" aria-label="Earth visibility intervals"></canvas>
+        <span class="track-total earth-track" id="timelineEarthTotal">—</span>
+        <div class="track-marker-area" aria-hidden="true"><span id="trackTimeMarker" hidden></span></div>
+      </div>
+    </div>
+    <div class="camera-controls">
+      <label for="cameraLift" title="Extra height above the landing view">Camera lift <output id="eyeLabel">0 m</output></label>
+      <input id="cameraLift" type="range" min="0" max="10000" step="10" value="0">
+      <div class="camera-buttons"><button id="lookDown" type="button">Look down</button><button id="resetLift" type="button">Landing view</button></div>
+    </div>
+  </div>
+  </div>
+</section>
+</div>
+</main>
+<dialog id="info"><button class="close" id="closeInfo" aria-label="Close">×</button><div class="eyebrow">METHOD & LIMITATIONS</div><h2>Real data.<br>Honest resolution.</h2>
+<p>Terrain uses <a href="https://pgda.gsfc.nasa.gov/products/90" target="_blank" rel="noreferrer">NASA LRO / LOLA elevation data</a>. Between 59.3°S and 59.3°N, the nearest ±18 km uses <a href="https://pgda.gsfc.nasa.gov/products/54" target="_blank" rel="noreferrer">SLDEM2015 (LOLA + Kaguya stereo terrain)</a> at approximately 60 m grid spacing when available. This fills gaps between laser tracks, so it can contain more real detail than the 30 m LOLA-only grid. The sidebar reports the active observer DEM. Grid spacing is not measurement accuracy: interpolation cannot recover unmeasured rocks or small craters. No synthetic craters are added.</p>
+<p>A bundled 20 m polar DEM covers a 40 km square around the south pole. Outside stereo coverage, or if stereo data cannot be loaded, the nearest area uses LDEM_1024 (about 30 m north–south spacing) when available, except within 0.3° of a pole. Outer layers use 118 m, 474 m and approximately 3.8 km grids. Missing online data falls back to the bundled maps.</p>
+<p>The 3D surface follows lunar curvature and extends about 490 km in each horizontal direction, beyond the visible horizon at the maximum 10 km camera lift. Concentric grids decrease detail with distance, with matched boundaries and surface-derived shading normals. Terrain height is shown at 1:1 scale; inspection lighting does not alter calculations.</p>
+<p>The Orbital imagery switch overlays NASA Moon Trek / LRO WAC photographs (about 100 m source pixels). These show fixed acquisition lighting and shadows, not the selected mission time. Turn imagery off to view geometric shading alone. Photographs add appearance detail; they do not change elevation, horizon or mission calculations. Nearby images blend into a wider photo mosaic instead of a flat gray border. Above 75° latitude, polar stereographic images replace the equatorial mosaic to avoid longitude seams. Transparent nodata uses the wider layer. If imagery cannot be loaded, the view falls back to untextured terrain. Polar imagery tiles are served at about 268 m per pixel; underlying elevation remains independently resolved.</p><p>Sun and Earth positions, distances and angular diameters come from <a href="https://ssd.jpl.nasa.gov/horizons/" target="_blank" rel="noreferrer">NASA / JPL Horizons</a>, using a lunar observer and MOON_ME coordinates, with no atmospheric refraction. True scale uses JPL angular diameters. The Discs control magnifies the displayed diameter threefold without changing the calculations. The Sun's glow is a visual effect; the Earth material is illustrative. No star catalogue is loaded.</p>
+<p>The mission horizon includes lunar curvature out to 250 km at 0.5° azimuth spacing. Visibility uses the center of each disc. Partial visibility, eclipses and radio link budgets are not simulated. Camera lift changes only the view; calculations use the observer height from the form.</p>
+<p>Incidence is measured from the local slope normal: 0° is perpendicular and 90° is grazing. Signal delay is geometric distance divided by light speed, excluding equipment and network delays.</p>
+<p>Durations and event dates are interpolated estimates; short events can be missed between samples. Darkness endurance assumes a charged battery at landing and resets whenever direct sunlight returns. The lander is illustrative and aligned with the local terrain normal. This is a research prototype, not a validated flight planning tool.</p></dialog>
+<script type="module" src="./app.js?v=orbit-v1"></script></body></html>

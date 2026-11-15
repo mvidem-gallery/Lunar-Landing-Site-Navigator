@@ -16,6 +16,7 @@ export class SurfaceContextMenu {
    * @param {Function} [options.onFocusBody]
    * @param {Function} options.onLandTo
    * @param {Function} [options.onSaveLandingSite]
+   * @param {Function} [options.onSetMissionTarget]
    * @param {Function} [options.onAddToMission]
    */
   constructor(
@@ -31,6 +32,7 @@ export class SurfaceContextMenu {
       onFocusBody,
       onLandTo,
       onSaveLandingSite,
+      onSetMissionTarget,
       onAddToMission,
     }
   ) {
@@ -45,6 +47,7 @@ export class SurfaceContextMenu {
     this.onFocusBody = onFocusBody;
     this.onLandTo = onLandTo;
     this.onSaveLandingSite = onSaveLandingSite;
+    this.onSetMissionTarget = onSetMissionTarget;
     this.onAddToMission = onAddToMission;
 
     this.activeTarget = null;
@@ -84,27 +87,31 @@ export class SurfaceContextMenu {
       </div>
       <button type="button" class="lunar-context-menu-item" data-action="focus-earth">
         <span>Focus on Earth</span>
-        <span class="lunar-context-menu-item-icon">🌍</span>
+        <span class="lunar-context-menu-item-icon">CAM</span>
       </button>
       <button type="button" class="lunar-context-menu-item" data-action="focus-moon">
         <span>Focus on Moon</span>
-        <span class="lunar-context-menu-item-icon">🌑</span>
+        <span class="lunar-context-menu-item-icon">CAM</span>
       </button>
       <button type="button" class="lunar-context-menu-item" data-action="focus-system">
         <span>Frame Earth–Moon System</span>
-        <span class="lunar-context-menu-item-icon">⚖</span>
+        <span class="lunar-context-menu-item-icon">SYS</span>
+      </button>
+      <button type="button" class="lunar-context-menu-item" data-action="set-mission-target">
+        <span>Set Mission Landing Target</span>
+        <span class="lunar-context-menu-item-icon">TRG</span>
       </button>
       <button type="button" class="lunar-context-menu-item" data-action="add-to-mission">
         <span>Add to Active Mission</span>
-        <span class="lunar-context-menu-item-icon">＋</span>
+        <span class="lunar-context-menu-item-icon">+PT</span>
       </button>
       <button type="button" class="lunar-context-menu-item" data-action="save-landing-site">
         <span>Save Landing Site</span>
-        <span class="lunar-context-menu-item-icon">★</span>
+        <span class="lunar-context-menu-item-icon">SITE</span>
       </button>
       <button type="button" class="lunar-context-menu-item" data-action="land-to">
         <span>Land to</span>
-        <span class="lunar-context-menu-item-icon">⌖</span>
+        <span class="lunar-context-menu-item-icon">SURF</span>
       </button>
     `;
 
@@ -118,6 +125,7 @@ export class SurfaceContextMenu {
     this.focusEarthBtn = this.menuEl.querySelector('[data-action="focus-earth"]');
     this.focusMoonBtn = this.menuEl.querySelector('[data-action="focus-moon"]');
     this.focusSystemBtn = this.menuEl.querySelector('[data-action="focus-system"]');
+    this.setMissionTargetBtn = this.menuEl.querySelector('[data-action="set-mission-target"]');
     this.addToMissionBtn = this.menuEl.querySelector('[data-action="add-to-mission"]');
     this.saveSiteBtn = this.menuEl.querySelector('[data-action="save-landing-site"]');
     this.landBtn = this.menuEl.querySelector('[data-action="land-to"]');
@@ -274,6 +282,14 @@ export class SurfaceContextMenu {
       this.hide();
     });
 
+    this.setMissionTargetBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.activeTarget?.showLunarActions && typeof this.onSetMissionTarget === 'function') {
+        this.onSetMissionTarget({ ...this.activeTarget });
+      }
+      this.hide();
+    });
+
     this.addToMissionBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (this.activeTarget?.showLunarActions && typeof this.onAddToMission === 'function') {
@@ -385,6 +401,7 @@ export class SurfaceContextMenu {
     this.focusEarthBtn.style.display = target.showFocusEarth ? 'flex' : 'none';
     this.focusMoonBtn.style.display = target.showFocusMoon ? 'flex' : 'none';
     this.focusSystemBtn.style.display = target.showFocusSystem ? 'flex' : 'none';
+    this.setMissionTargetBtn.style.display = target.showLunarActions ? 'flex' : 'none';
     this.addToMissionBtn.style.display = target.showLunarActions ? 'flex' : 'none';
     this.saveSiteBtn.style.display = target.showLunarActions ? 'flex' : 'none';
     this.landBtn.style.display = target.showLandTo ? 'flex' : 'none';

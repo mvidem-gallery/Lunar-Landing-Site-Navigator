@@ -49,6 +49,7 @@ export class LandingSitesMenu {
    * @param {HTMLElement | null} [options.chevronEl]
    * @param {Function | null} [options.onFlyToSite]
    * @param {Function | null} [options.onAddToMission]
+   * @param {Function | null} [options.onSetMissionTarget]
    * @param {Function | null} [options.onRequestOpenTab]
    */
   constructor({
@@ -60,6 +61,7 @@ export class LandingSitesMenu {
     chevronEl = null,
     onFlyToSite = null,
     onAddToMission = null,
+    onSetMissionTarget = null,
     onRequestOpenTab = null,
   }) {
     this.scene = scene;
@@ -71,6 +73,7 @@ export class LandingSitesMenu {
     this.chevronEl = chevronEl;
     this.onFlyToSite = onFlyToSite;
     this.onAddToMission = onAddToMission;
+    this.onSetMissionTarget = onSetMissionTarget;
     this.onRequestOpenTab = onRequestOpenTab;
 
     this.isOpen = this.isEmbedded;
@@ -100,13 +103,13 @@ export class LandingSitesMenu {
     this._markerOuterGeo = new THREE.RingGeometry(0.6, 1.0, 32);
     this._markerInnerGeo = new THREE.CircleGeometry(0.36, 20);
     this._selectedOuterMat = new THREE.MeshBasicMaterial({
-      color: 0xffd166,
+      color: 0xf59e0b,
       side: THREE.DoubleSide,
       depthTest: true,
       depthWrite: false,
     });
     this._customOuterMat = new THREE.MeshBasicMaterial({
-      color: 0x4fc3f7,
+      color: 0x0095ff,
       side: THREE.DoubleSide,
       depthTest: true,
       depthWrite: false,
@@ -187,6 +190,14 @@ export class LandingSitesMenu {
         <button type="button" class="ls-close-btn" data-action="close" title="Close window">✕</button>
       </div>
 
+      <div class="ls-section-bar">
+        <span class="layers-group-label">SITE CATALOG</span>
+        <button type="button" class="section-arrow-btn" data-action="toggle-catalog" title="Collapse / Expand Site Catalog" aria-expanded="true">
+          <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+      </div>
+
+      <div class="ls-catalog-body" data-field="catalog-body" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;">
       <div class="ls-tabs">
         <button type="button" class="ls-tab-btn active" data-tab="nasa">
           NASA Missions (<span data-field="nasa-count">0</span>)
@@ -218,7 +229,7 @@ export class LandingSitesMenu {
           class="hud-btn ls-sync-btn"
           data-action="sync-api"
           title="Sync additional sites from Launch Library 2 API"
-        >↻ API</button>
+        >SYNC API</button>
       </div>
 
       <form class="ls-custom-form" data-field="custom-form">
@@ -258,8 +269,8 @@ export class LandingSitesMenu {
         />
         <div class="ls-form-error" data-field="form-error" style="display: none; color: #ff8a80; font-size: 10.5px;"></div>
         <div class="ls-form-actions">
-          <button type="button" class="hud-btn" data-action="fill-camera">⌖ From Camera Center</button>
-          <button type="submit" class="hud-btn">★ Save Site</button>
+          <button type="button" class="hud-btn" data-action="fill-camera">From Cam Center</button>
+          <button type="submit" class="hud-btn">Save Site</button>
         </div>
       </form>
 
@@ -271,6 +282,7 @@ export class LandingSitesMenu {
           <button type="button" class="hud-btn ls-mini-btn" data-action="toggle-custom-pins">Pins: ON</button>
           <button type="button" class="hud-btn ls-mini-btn" data-action="clear-selection" style="display: none;">Clear Pin</button>
         </div>
+      </div>
       </div>
     `;
 
@@ -296,6 +308,8 @@ export class LandingSitesMenu {
     this.footerStatusEl = this.windowEl.querySelector('[data-field="footer-status"]');
     this.togglePinsBtn = this.windowEl.querySelector('[data-action="toggle-custom-pins"]');
     this.clearSelectionBtn = this.windowEl.querySelector('[data-action="clear-selection"]');
+    this.catalogCollapseBtn = this.windowEl.querySelector('[data-action="toggle-catalog"]');
+    this.catalogBodyEl = this.windowEl.querySelector('[data-field="catalog-body"]');
 
     if (this.mountContainer) {
       this.mountContainer.appendChild(this.windowEl);
@@ -315,6 +329,15 @@ export class LandingSitesMenu {
 
     if (this.closeBtn) {
       this.closeBtn.addEventListener('click', () => this.close());
+    }
+
+    if (this.catalogCollapseBtn && this.catalogBodyEl) {
+      this.catalogCollapseBtn.addEventListener('click', () => {
+        const collapsed = this.catalogBodyEl.classList.toggle('collapsed');
+        this.catalogBodyEl.style.display = collapsed ? 'none' : 'flex';
+        this.catalogCollapseBtn.classList.toggle('collapsed', collapsed);
+        this.catalogCollapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      });
     }
 
     this.tabButtons.forEach((btn) => {
@@ -389,6 +412,10 @@ export class LandingSitesMenu {
         const action = actionBtn.dataset.cardAction;
         if (action === 'fly') {
           this.selectAndFlyTo(site);
+        } else if (action === 'set-target') {
+          if (typeof this.onSetMissionTarget === 'function') {
+            this.onSetMissionTarget(site);
+          }
         } else if (action === 'add-to-mission') {
           if (typeof this.onAddToMission === 'function') {
             this.onAddToMission(site);
@@ -642,7 +669,7 @@ export class LandingSitesMenu {
     this._apiSyncState = 'loading';
     this._apiSyncNote = 'Querying Launch Library 2 API...';
     this.syncApiBtn.disabled = true;
-    this.syncApiBtn.textContent = '↻ ...';
+    this.syncApiBtn.textContent = 'SYNC...';
     this._updateFooterStatus();
 
     try {
@@ -696,7 +723,7 @@ export class LandingSitesMenu {
       this._apiSyncNote = `API unavailable (${err.message})`;
     } finally {
       this.syncApiBtn.disabled = false;
-      this.syncApiBtn.textContent = '↻ API';
+      this.syncApiBtn.textContent = 'SYNC API';
       this._updateTopButtonUI();
       this._renderWindow();
     }
@@ -789,15 +816,17 @@ export class LandingSitesMenu {
         const actionButtons =
           site.origin === 'custom'
             ? `
-              <button type="button" class="hud-btn ls-mini-btn mission-add" data-card-action="add-to-mission" title="Add site to active mission">+ Mission</button>
+              <button type="button" class="hud-btn ls-mini-btn mission-add" data-card-action="set-target" title="Set as active mission landing target">Target</button>
+              <button type="button" class="hud-btn ls-mini-btn" data-card-action="add-to-mission" title="Add waypoint to active mission">+Pt</button>
               <button type="button" class="hud-btn ls-mini-btn" data-card-action="fly">Fly To</button>
-              <button type="button" class="hud-btn ls-mini-btn danger" data-card-action="delete">✕</button>
+              <button type="button" class="hud-btn ls-mini-btn danger" data-card-action="delete">×</button>
             `
             : `
-              <button type="button" class="hud-btn ls-mini-btn mission-add" data-card-action="add-to-mission" title="Add site to active mission">+ Mission</button>
+              <button type="button" class="hud-btn ls-mini-btn mission-add" data-card-action="set-target" title="Set as active mission landing target">Target</button>
+              <button type="button" class="hud-btn ls-mini-btn" data-card-action="add-to-mission" title="Add waypoint to active mission">+Pt</button>
               <button type="button" class="hud-btn ls-mini-btn" data-card-action="fly">Fly To</button>
               <button type="button" class="hud-btn ls-mini-btn" data-card-action="save-to-custom" ${alreadySaved ? 'disabled' : ''}>
-                ${alreadySaved ? '✓' : '★'}
+                ${alreadySaved ? 'SAVED' : 'SAVE'}
               </button>
             `;
 

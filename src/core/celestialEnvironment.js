@@ -574,6 +574,16 @@ export class CelestialEnvironment {
     return this.setTrajectoryDocument(jsonDoc, options);
   }
 
+  clearTrajectory() {
+    this._parsedTrajectory = null;
+    this._generatedTrajectory = null;
+    this._trajectoryDirty = false;
+    this.trajectoryRenderer.clear();
+    this.trajectoryRenderer.setVisible(false);
+    this._syncEarthState();
+    this._onTrajectoryLoadedCallback?.(null);
+  }
+
   setTrajectoryVisible(visible) {
     this._trajectoryUserVisible = Boolean(visible);
     this._syncTrajectoryState();
@@ -597,6 +607,18 @@ export class CelestialEnvironment {
 
   onTrajectoryLoaded(callback) {
     this._onTrajectoryLoadedCallback = callback;
+  }
+
+  getCislunarFigure() {
+    const sp = this._generatedTrajectory?.sceneParams;
+    if (!sp || !Array.isArray(sp.figureCenter)) {
+      return null;
+    }
+    return {
+      center: sp.figureCenter,
+      radius: sp.figureRadius,
+      refMoonCenter: sp.refMoonCenter || sp.initialMoonCenter || null,
+    };
   }
 
   getTrajectoryInfo() {

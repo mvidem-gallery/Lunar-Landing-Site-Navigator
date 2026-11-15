@@ -5,4 +5,4 @@ cache/
 archive/
 dist/
 .lunar-cache/
-lunar-horizon-latest/lunar-horizon/worker/index.js
+archive/2/lunar-horizon/worker/index.js

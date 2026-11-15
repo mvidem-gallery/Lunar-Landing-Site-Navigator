@@ -21,7 +21,7 @@ export function landerOrbitPosition(target, azimuth, elevation, radius, boundsRa
   }
   return [x, cameraY, z];
 }
-export function interpolate(rows,t){let lo=0,hi=rows.length-1;if(t<=rows[0][0])return rows[0].slice();if(t>=rows[hi][0])return rows[hi].slice();while(hi-lo>1){let m=(lo+hi)>>1;if(rows[m][0]<=t)lo=m;else hi=m;}const a=rows[lo],b=rows[hi],f=(t-a[0])/(b[0]-a[0]);return [t,(a[1]+(((b[1]-a[1]+540)%360)-180)*f+360)%360,...a.slice(2).map((v,i)=>v+(b[i+2]-v)*f)];}
+export function interpolate(rows,t,wrap=[]){let lo=0,hi=rows.length-1;if(t<=rows[0][0])return rows[0].slice();if(t>=rows[hi][0])return rows[hi].slice();while(hi-lo>1){let m=(lo+hi)>>1;if(rows[m][0]<=t)lo=m;else hi=m;}const a=rows[lo],b=rows[hi],f=(t-a[0])/(b[0]-a[0]);return [t,(a[1]+(((b[1]-a[1]+540)%360)-180)*f+360)%360,...a.slice(2).map((v,i)=>wrap.includes(i+2) ? (v+(((b[i+2]-v+540)%360)-180)*f+360)%360 : v+(b[i+2]-v)*f)];}
 export function horizonAt(h,az){const p=((az%360)+360)%360/360*h.length,i=Math.floor(p);return h[i]*(1-(p-i))+h[(i+1)%h.length]*(p-i);}
 export function integrate(rows,key){let ms=0;for(let i=1;i<rows.length;i++){const a=rows[i-1],b=rows[i],v=a[key],w=b[key],dt=b.t-a.t;if(v>0&&w>0)ms+=dt;else if(v>0)ms+=dt*v/(v-w);else if(w>0)ms+=dt*w/(w-v);}return ms;}
 export function integrateOverlap(rows,keyA,keyB){let ms=0;const interval=(a,b)=>a>0&&b>0?[0,1]:a<=0&&b<=0?[0,0]:a>0?[0,a/(a-b)]:[-a/(b-a),1];for(let i=1;i<rows.length;i++){const a=rows[i-1],b=rows[i],x=interval(a[keyA],b[keyA]),y=interval(a[keyB],b[keyB]);ms+=(b.t-a.t)*Math.max(0,Math.min(x[1],y[1])-Math.max(x[0],y[0]));}return ms;}

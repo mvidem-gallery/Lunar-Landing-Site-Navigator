@@ -5,12 +5,12 @@ import {Worker} from 'node:worker_threads';
 import {ephemeris, terrainDetail, imageryTile} from '../src/server.js';
 import {createLocalCache} from './local-cache.mjs';
 
-const types = {html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', bin: 'application/octet-stream'};
+const types = {html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', bin: 'application/octet-stream', webp: 'image/webp'};
 const day = 86400000;
 const cachedResponse = createLocalCache('.lunar-cache');
 const routes = new Map([
   ['/api/ephemeris', [async url => Response.json(await ephemeris(url)), 7 * day]],
-  ['/api/terrain-detail', [terrainDetail, 30 * day]],
+  ['/api/terrain-detail', [url => terrainDetail(url, {preferCompactRanges: true}), 30 * day]],
   ['/api/imagery', [imageryTile, 30 * day]],
 ]);
 const polarRoutes = new Map([['/terrain.packed', 'terrain'], ['/far.packed', 'far']]);
@@ -61,7 +61,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const path = url.pathname === '/' ? 'src/index.html'
-      : url.pathname === '/three.js' ? 'assets/three.js'
+      : ['/three.js', '/earth-blue-marble.webp', '/stars-hyg.bin'].includes(url.pathname) ? 'assets' + url.pathname
       : /\.(bin|json)$/.test(url.pathname) ? 'data' + url.pathname : 'src' + url.pathname;
     if (path.includes('..') || !existsSync(path)) {
       res.writeHead(404).end('Not found');

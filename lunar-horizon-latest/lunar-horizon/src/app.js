@@ -1,3 +1,4 @@
+import {createSkyVisuals} from '/sky-render.js?v=sky-v2';
 import {imageryPlan, loadImageryBatch} from '/imagery.js?v=imagery-v5';
 import {DAY, MINUTE, effectiveStep, solarMargin, darknessIntervals, longestDarkness, earliestWindow} from '/mission.js?v=terrain-v3';
 import {createLander, seatLander} from '/lander.js?v=lander-v2';
@@ -34,8 +35,8 @@ $('reliefLight').onclick = () => {
   applyLighting();
 };
 applyLighting();
-const sun=new THREE.Mesh(new THREE.SphereGeometry(1,24,16),new THREE.MeshBasicMaterial({color:0xfff3d2,toneMapped:false}));scene.add(sun);
-sun.visible = false;
+const skyVisuals = createSkyVisuals(scene, webglAvailable);
+const {sun, earth} = skyVisuals;
 const glowCanvas = document.createElement('canvas');
 glowCanvas.width = glowCanvas.height = 128;
 const glowContext = glowCanvas.getContext('2d');
@@ -53,10 +54,6 @@ const sunGlow = new THREE.Sprite(new THREE.SpriteMaterial({
 }));
 scene.add(sunGlow);
 sunGlow.visible = false;
-const earth=new THREE.Mesh(new THREE.SphereGeometry(1,32,24),new THREE.MeshBasicMaterial({color:0x7baac7}));scene.add(earth);
-earth.visible = false;
-// Fine latitude/longitude lines make the abstract Earth clearly a globe, not a photograph.
-const earthLines=new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.SphereGeometry(1.003,16,8)),new THREE.LineBasicMaterial({color:0xcde2e6,transparent:true,opacity:.13}));earth.add(earthLines);
 const ro = new ResizeObserver(() => {
   const canvas = $('canvas');
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -397,7 +394,7 @@ function terrainJob(m, detailTile, fineTile, landingTile, {preview = false, onGr
       preview, reportGround: Boolean(onGround), reportProgress: Boolean(onProgress)});
   });
 }
-function evaluate(time){const s=interpolate(ephem.sun,time),e=interpolate(ephem.earth,time),{incidence:inc,margin:sm}=solarMargin(s, terrain);const em=e[2]-horizonAt(terrain.horizon,e[1]);return {t:time,s,e,inc,sm,em,bm:Math.min(sm,em)};}
+function evaluate(time){const s=interpolate(ephem.sun,time),e=interpolate(ephem.earth,time,[5,7,9]),{incidence:inc,margin:sm}=solarMargin(s, terrain);const em=e[2]-horizonAt(terrain.horizon,e[1]);return {t:time,s,e,inc,sm,em,bm:Math.min(sm,em)};}
 function duration(ms){const hours=ms/36e5;return fmt(hours,1)+' hr';}
 function analyze(){const times=[...new Set([...ephem.sun.map(r=>r[0]),mission.end])].sort((a,b)=>a-b).filter(v=>v>=mission.start&&v<=mission.end);analysis=times.map(evaluate);const all=mission.end-mission.start;for(const [id,key]of [['sunTotal','sm'],['earthTotal','em'],['bothTotal','bm']]){const ms=key==='bm'?integrateOverlap(analysis,'sm','em'):integrate(analysis,key);const total = duration(ms)+' · '+fmt(ms/all*100,0)+'%';
 $(id).textContent = total;
@@ -421,6 +418,7 @@ $('discScale').onclick = () => {
   if (ephem && terrain && !overview) updateSkyObjects(evaluate(t));
 };
 function updateSkyObjects({s, e}) {
+  skyVisuals.update({time: t, lat: terrain.lat, lon: terrain.lon, earthRow: e, sunRow: s});
   $('sunDiameter').textContent = fmt(s[3], 3) + '°';
   $('earthDiameter').textContent = fmt(e[3], 3) + '°';
   const observerHeight = mission?.height ?? Number($('height').value);
@@ -578,7 +576,7 @@ let recommendedWindow;
 function ephemerisQuery(m, ground) {
   return new URLSearchParams({
     lat: m.lat, lon: m.lon, alt: (ground + m.height) / 1000,
-    start: new Date(m.start).toISOString(), end: new Date(m.end).toISOString(), step: m.step,
+    start: new Date(m.start).toISOString(), end: new Date(m.end).toISOString(), step: m.step, view: 'sky-v1',
   });
 }
 
@@ -763,7 +761,7 @@ if(current!==version)return;mission=m;ephem=data;if(terrain!==tr)renderTerrain(t
 void assessMission(m, tr, current);
 }catch(e){$('darkResult').textContent='These parameters have not been assessed.';status(e.message,true);if(mission&&ephem){$('play').disabled=false;timeSlider.disabled = false;$('export').disabled=false;status(e.message+' Showing the previous successful calculation.',true);}}finally{showOverview = false;if(current===version){clearTerrainOverview();setBusy(false);}}}
 $('export').onclick=()=>{const meta=[['# Lunar Horizon research prototype'],['# NASA LOLA DEM; JPL Horizons; center-of-disk visibility; no eclipses'],['# UTC; Moon_ME; horizon radius 250 km; angular step 0.5 degrees'],['# latitude',mission.lat,'longitude_east',mission.lon,'eye_height_m',mission.height,'dem_spacing_m',terrain.resolution,'step_min',mission.step]];const rows=[...meta,['utc','sun_az_deg','sun_el_deg','incidence_deg','sun_center_visible_and_front_lit','earth_az_deg','earth_el_deg','earth_center_visible','earth_distance_km','one_way_s','round_trip_s'],...analysis.map(v=>[new Date(v.t).toISOString(),v.s[1],v.s[2],v.inc,v.sm>0?1:0,v.e[1],v.e[2],v.em>0?1:0,v.e[4],v.e[4]/299792.458,v.e[4]/299792.458*2])];const blob=new Blob(['\uFEFF'+rows.map(r=>r.join(',')).join('\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='lunar-mission.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-function loop(now){requestAnimationFrame(loop);const delta=lastFrame?Math.min((now-lastFrame)/1000,.1):0;lastFrame=now;if(playing&&mission){t=Math.min(mission.end,t+delta*Number($('speed').value)*1000);if(t===mission.end){playing=false;$('play').textContent='▶';}update();}advanceTerrainOverview(now);renderer.render(scene,camera);if (ephem && webglAvailable) {
+function loop(now){requestAnimationFrame(loop);const delta=lastFrame?Math.min((now-lastFrame)/1000,.1):0;lastFrame=now;if(playing&&mission){t=Math.min(mission.end,t+delta*Number($('speed').value)*1000);if(t===mission.end){playing=false;$('play').textContent='▶';}update();}advanceTerrainOverview(now);skyVisuals.followCamera(camera.position);renderer.render(scene,camera);if (ephem && webglAvailable) {
   positionLabel(earth, $('objectLabel'));
   positionLabel(sun, $('sunLabel'));
 }}

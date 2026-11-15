@@ -182,7 +182,7 @@ export class RulerTool {
     this.scene.add(this.group);
 
     this.lockedMaterial = new LineMaterial({
-      color: 0xffd166,
+      color: 0xf59e0b,
       linewidth: 2.6,
       transparent: true,
       opacity: 0.96,
@@ -192,7 +192,7 @@ export class RulerTool {
     });
 
     this.previewMaterial = new LineMaterial({
-      color: 0x4fc3f7,
+      color: 0x0095ff,
       linewidth: 2.0,
       transparent: true,
       opacity: 0.84,
@@ -207,7 +207,7 @@ export class RulerTool {
     this._markerOuterGeo = new THREE.RingGeometry(0.62, 1.0, 32);
     this._markerInnerGeo = new THREE.CircleGeometry(0.36, 20);
     this._markerMatOuter = new THREE.MeshBasicMaterial({
-      color: 0xffd166,
+      color: 0xf59e0b,
       side: THREE.DoubleSide,
       depthTest: true,
       depthWrite: false,
@@ -242,12 +242,12 @@ export class RulerTool {
       <div class="ruler-summary" data-field="summary" style="display: none;"></div>
       <div class="ruler-segments-list" data-field="segments" style="display: none;"></div>
       <button type="button" class="hud-btn ruler-save-mission-btn" data-action="save-mission" disabled>
-        ★ Save Measurement to Mission
+        + Save Measurement to Mission
       </button>
       <div class="ruler-actions">
-        <button type="button" class="hud-btn ruler-action-btn" data-action="undo" title="Remove last point (Backspace)">↩ Undo</button>
-        <button type="button" class="hud-btn ruler-action-btn" data-action="finish" title="Lock measurement (Enter)">✓ Done</button>
-        <button type="button" class="hud-btn ruler-action-btn danger" data-action="clear" title="Clear measurement (Delete)">✕ Clear</button>
+        <button type="button" class="hud-btn ruler-action-btn" data-action="undo" title="Remove last point (Backspace)">Undo</button>
+        <button type="button" class="hud-btn ruler-action-btn" data-action="finish" title="Lock measurement (Enter)">Done</button>
+        <button type="button" class="hud-btn ruler-action-btn danger" data-action="clear" title="Clear measurement (Delete)">Clear</button>
       </div>
     `;
 

@@ -75,13 +75,13 @@ export class TimelineController {
       <div class="timeline-controls-box">
         <div class="timeline-transport-row">
           <div class="timeline-btn-group">
-            <button type="button" class="tl-btn" data-action="step-back" title="Step back">◀</button>
-            <button type="button" class="tl-btn" data-action="play-pause" title="Play / Pause (Space)">▶</button>
-            <button type="button" class="tl-btn" data-action="step-forward" title="Step forward">▶▶</button>
+            <button type="button" class="tl-btn" data-action="step-back" title="Step back">&lt;</button>
+            <button type="button" class="tl-btn" data-action="play-pause" title="Play / Pause (Space)">PLAY</button>
+            <button type="button" class="tl-btn" data-action="step-forward" title="Step forward">&gt;</button>
           </div>
           <div class="timeline-btn-group">
             <button type="button" class="tl-btn tl-speed-btn" data-action="cycle-speed" title="Cycle time speed">1h/s</button>
-            <button type="button" class="tl-btn tl-now-btn" data-action="now" title="Current UTC time">Now</button>
+            <button type="button" class="tl-btn tl-now-btn" data-action="now" title="Current UTC time">NOW</button>
           </div>
         </div>
         <div class="timeline-date-row">
@@ -235,7 +235,7 @@ export class TimelineController {
     clearTimeout(this._commitDebounceTimer);
     if (!windowConfig) {
       this.trajectoryWindow = null;
-      this.nowBtn.textContent = 'Now';
+      this.nowBtn.textContent = 'NOW';
       this.nowBtn.title = 'Current UTC time';
       this.nowBtn.classList.remove('traj-t0');
       this.render();
@@ -326,7 +326,7 @@ export class TimelineController {
   play() {
     if (this.isPlaying) return;
     this.isPlaying = true;
-    this.playPauseBtn.textContent = '⏸';
+    this.playPauseBtn.textContent = 'PAUSE';
     this.playPauseBtn.classList.add('playing');
     this.onPlayStateChange?.(true);
     this._lastRafTime = performance.now();
@@ -368,7 +368,7 @@ export class TimelineController {
   pause() {
     if (!this.isPlaying) return;
     this.isPlaying = false;
-    this.playPauseBtn.textContent = '▶';
+    this.playPauseBtn.textContent = 'PLAY';
     this.playPauseBtn.classList.remove('playing');
     this.onPlayStateChange?.(false);
     if (this._rafId) {
@@ -463,7 +463,7 @@ export class TimelineController {
     const { major, minor } = this._pickTickIntervals(width);
 
     // Горизонтальна лінія основи
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, height - 18);
@@ -472,7 +472,7 @@ export class TimelineController {
 
     // Дрібні поділки
     const firstMinor = Math.floor(startMs / minor) * minor;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     for (let t = firstMinor; t <= endMs; t += minor) {
       const x = ((t - startMs) / this.spanMs) * width;
       if (x < 0 || x > width) continue;
@@ -484,7 +484,7 @@ export class TimelineController {
 
     // Головні поділки + підписи дат
     const firstMajor = Math.floor(startMs / major) * major;
-    ctx.font = '11px "Segoe UI", "Roboto", sans-serif';
+    ctx.font = '500 10px "JetBrains Mono", "SFMono-Regular", Consolas, monospace';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
 
@@ -492,13 +492,13 @@ export class TimelineController {
       const x = ((t - startMs) / this.spanMs) * width;
       if (x < -40 || x > width + 40) continue;
 
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.34)';
       ctx.beginPath();
       ctx.moveTo(x, 6);
       ctx.lineTo(x, height - 6);
       ctx.stroke();
 
-      ctx.fillStyle = '#d8e6f3';
+      ctx.fillStyle = '#94a0b0';
       ctx.fillText(this._formatTickLabel(t, major), x + 5, 5);
     }
 
@@ -509,7 +509,7 @@ export class TimelineController {
       const bandRight = ((trajEndMs - startMs) / this.spanMs) * width;
 
       // Приглушення за межами часового вікна місії
-      ctx.fillStyle = 'rgba(8, 12, 18, 0.42)';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
       if (bandLeft > 0) {
         ctx.fillRect(0, 0, Math.min(width, bandLeft), height);
       }
@@ -541,7 +541,7 @@ export class TimelineController {
 
       // Віхи місії (T0, TLI, LOI, DOI, PDI, TD)
       let lastBadgeRight = -Infinity;
-      ctx.font = '700 9.5px "Courier New", monospace';
+      ctx.font = '600 9px "JetBrains Mono", Consolas, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       for (const ev of events) {
@@ -558,12 +558,12 @@ export class TimelineController {
         const labelWidth = ctx.measureText(shortLabel).width + 8;
         if (ex - labelWidth * 0.5 > lastBadgeRight + 4) {
           const badgeY = height - 32;
-          ctx.fillStyle = 'rgba(13, 19, 28, 0.88)';
+          ctx.fillStyle = 'rgba(8, 10, 13, 0.94)';
           ctx.fillRect(ex - labelWidth * 0.5, badgeY - 7, labelWidth, 14);
           ctx.strokeStyle = ev.colorCss || '#38bdf8';
           ctx.lineWidth = 1;
           ctx.strokeRect(ex - labelWidth * 0.5, badgeY - 7, labelWidth, 14);
-          ctx.fillStyle = '#e2e8f0';
+          ctx.fillStyle = '#f4f7fa';
           ctx.fillText(shortLabel, ex, badgeY + 0.5);
           lastBadgeRight = ex + labelWidth * 0.5;
         }
@@ -571,15 +571,15 @@ export class TimelineController {
     }
 
     // Вертикальний бігунок поточного часу (червоно-кораловий індикатор як на макеті)
-    ctx.strokeStyle = '#ff5c5c';
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(playheadX, 0);
     ctx.lineTo(playheadX, height);
     ctx.stroke();
 
     // Наконечник бігунка
-    ctx.fillStyle = '#4fc3f7';
+    ctx.fillStyle = '#f4f7fa';
     ctx.beginPath();
     ctx.moveTo(playheadX - 4, height - 24);
     ctx.lineTo(playheadX + 4, height - 24);

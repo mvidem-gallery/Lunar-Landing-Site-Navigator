@@ -15,6 +15,7 @@ import { LandingSitesMenu } from './interaction/landingSitesMenu.js';
 import { MissionPanel } from './interaction/missionPanel.js';
 import { TimelineController } from './interaction/timelineController.js';
 import { LunarHorizonModal } from './lunar-horizon/lunarHorizonModal.js';
+import { loadTrajectoryDoc } from './data/trajectoryStorage.js';
 import { MAP_LAYERS, TRAJECTORY_CONFIG, VIEW_MODES } from './config/constants.js';
 
 async function bootstrap() {
@@ -140,9 +141,17 @@ async function bootstrap() {
 
     celestialEnv.onTrajectoryLoaded((info) => {
       uiController.updateTrajectoryInfo(info);
+      sceneManager.setCislunarFigure(celestialEnv.getCislunarFigure(), {
+        animate:
+          celestialEnv.viewMode === VIEW_MODES.CISLUNAR && sceneManager.getCislunarFocus() === 'SYSTEM',
+      });
       if (celestialEnv.viewMode === VIEW_MODES.CISLUNAR) {
-        trajectorySpanMs = null;
-        syncTimelineWithMode(VIEW_MODES.CISLUNAR, { resetToStart: true });
+        if (info) {
+          trajectorySpanMs = null;
+          syncTimelineWithMode(VIEW_MODES.CISLUNAR, { resetToStart: true });
+        } else {
+          syncTimelineWithMode(VIEW_MODES.CISLUNAR);
+        }
       }
     });
     celestialEnv.onTrajectoryTelemetryTick((sample) => {
@@ -190,8 +199,10 @@ async function bootstrap() {
       if (normalized === VIEW_MODES.LUNAR && latestTimelineEphemData) {
         applyEphemerisToScene(latestTimelineEphemData, currentSimulationDate);
       }
+      sceneManager.setCislunarFigure(celestialEnv.getCislunarFigure(), { animate: false });
       sceneManager.setViewMode(normalized, options);
       uiController.setViewModeUI(normalized);
+      missionPanel?.refreshViewState();
     }
 
     sceneManager.onViewModeChange((mode) => {
@@ -204,6 +215,7 @@ async function bootstrap() {
         applyEphemerisToScene(latestTimelineEphemData, currentSimulationDate);
       }
       uiController.setViewModeUI(mode);
+      missionPanel?.refreshViewState();
     });
 
     uiController.onViewModeChange((mode) => {
@@ -229,6 +241,77 @@ async function bootstrap() {
     }
 
     let missionPanel = null;
+    let missionTrajectoryLoadSeq = 0;
+    let currentLoadedTrajectoryKey = null;
+
+    async function applyMissionTrajectory(
+      mission,
+      { jsonDoc = null, syncFromMeta = false, overwriteSiteIfUnset = false, forceReload = false } = {}
+    ) {
+      const traj = mission?.trajectory;
+      if (!mission || !traj || traj.sourceType === 'none') {
+        missionTrajectoryLoadSeq += 1;
+        currentLoadedTrajectoryKey = null;
+        celestialEnv.clearTrajectory();
+        return;
+      }
+
+      const key =
+        traj.sourceType === 'uploaded' && traj.docId
+          ? `uploaded:${traj.docId}`
+          : traj.sourceType === 'url' && traj.url
+            ? `url:${traj.url}`
+            : null;
+      if (!key) {
+        missionTrajectoryLoadSeq += 1;
+        currentLoadedTrajectoryKey = null;
+        celestialEnv.clearTrajectory();
+        return;
+      }
+
+      if (!forceReload && !jsonDoc && currentLoadedTrajectoryKey === key && celestialEnv.getTrajectoryInfo()) {
+        celestialEnv.setTrajectoryVisible(traj.visible !== false);
+        return;
+      }
+
+      const seq = ++missionTrajectoryLoadSeq;
+      try {
+        let info = null;
+        if (jsonDoc) {
+          info = celestialEnv.setTrajectoryDocument(jsonDoc);
+        } else if (traj.sourceType === 'uploaded' && traj.docId) {
+          const storedDoc = await loadTrajectoryDoc(traj.docId);
+          if (seq !== missionTrajectoryLoadSeq) return;
+          if (!storedDoc) {
+            currentLoadedTrajectoryKey = null;
+            celestialEnv.clearTrajectory();
+            return;
+          }
+          info = celestialEnv.setTrajectoryDocument(storedDoc);
+        } else if (traj.sourceType === 'url' && traj.url) {
+          info = await celestialEnv.loadTrajectory(traj.url);
+          if (seq !== missionTrajectoryLoadSeq) return;
+        }
+
+        currentLoadedTrajectoryKey = key;
+        celestialEnv.setTrajectoryVisible(traj.visible !== false);
+        if (missionPanel && info) {
+          missionPanel.hydrateMissionTrajectoryInfo(mission.id, info, {
+            syncDates: syncFromMeta,
+            overwriteSiteIfUnset,
+          });
+        }
+      } catch (err) {
+        if (seq !== missionTrajectoryLoadSeq) return;
+        console.warn('Mission trajectory load failed:', err?.message || err);
+        uiController.setTrajectoryError(err?.message || 'Trajectory not loaded');
+      }
+    }
+
+    uiController.onTopMissionClick(() => {
+      uiController.setLeftCollapsed(false);
+      uiController.setLeftTab('missions');
+    });
 
     const rulerTool = new RulerTool({
       scene: moonGroup,
@@ -238,6 +321,7 @@ async function bootstrap() {
       onSaveToMission: (snapshot) => {
         if (missionPanel && snapshot) {
           missionPanel.saveRulerMeasurement(snapshot);
+          missionPanel.openActiveMissionDetail('surface');
           uiController.setLeftCollapsed(false);
           uiController.setLeftTab('missions');
         }
@@ -277,10 +361,57 @@ async function bootstrap() {
         uiController.setLeftCollapsed(false);
         uiController.setLeftTab('sites');
       },
-      onActiveMissionChange: (mission) => {
+      onActiveMissionChange: (mission, meta = {}) => {
         uiController.updateMissionSummary(mission);
+        if (meta.reason === 'switch') {
+          applyMissionTrajectory(mission, {
+            syncFromMeta: meta.reason === 'init' && !mission?.trajectory?.meta,
+          });
+        }
+        if (
+          meta.reason === 'switch' &&
+          mission?.flight?.landingDateIso &&
+          sceneManager.viewMode !== VIEW_MODES.CISLUNAR &&
+          timelineController
+        ) {
+          const targetDate = new Date(mission.flight.landingDateIso);
+          if (!Number.isNaN(targetDate.getTime())) {
+            timelineController.pause();
+            timelineController.setDate(targetDate, true);
+          }
+        }
       },
+      onLoadMissionTrajectory: (mission, opts) => applyMissionTrajectory(mission, { ...opts, forceReload: true }),
+      onSetTrajectoryVisible: (visible) => {
+        celestialEnv.setTrajectoryVisible(visible);
+      },
+      onOpenCislunarView: () => {
+        setViewMode(VIEW_MODES.CISLUNAR);
+      },
+      onLandToMissionTarget: (mission) => {
+        if (sceneManager.viewMode === VIEW_MODES.CISLUNAR || !mission?.landingSite) return;
+        const date =
+          mission.flight?.landingDateIso && Number.isFinite(Date.parse(mission.flight.landingDateIso))
+            ? new Date(mission.flight.landingDateIso)
+            : currentSimulationDate;
+        const targetData = {
+          lat: mission.landingSite.lat,
+          lon: mission.landingSite.lon,
+          date: new Date(date.getTime()),
+          isoDate: date.toISOString(),
+        };
+        lunarHorizonModal.open(targetData);
+      },
+      getCurrentTimelineDate: () => timelineController?.currentDate || currentSimulationDate,
+      onJumpTimelineToDate: (date) => {
+        if (!timelineController || !(date instanceof Date) || Number.isNaN(date.getTime())) return;
+        timelineController.pause();
+        timelineController.setDate(date, true);
+      },
+      getViewMode: () => sceneManager.viewMode,
     });
+
+    applyMissionTrajectory(missionPanel.getActiveMission(), { syncFromMeta: true });
 
     const landingSitesMenu = new LandingSitesMenu({
       scene: moonGroup,
@@ -290,6 +421,24 @@ async function bootstrap() {
         const targetZoom = site.status === 'planned' ? 45 : 70;
         sceneManager.flyToCoordinates(site.lat, site.lon, targetZoom);
       },
+      onSetMissionTarget: (site) => {
+        missionPanel.setActiveLandingSite({
+          name: site.name,
+          lat: site.lat,
+          lon: site.lon,
+          note: site.region || site.description || '',
+        });
+        const active = missionPanel.getActiveMission();
+        if (active && !active.flight?.landingDateIso && site.date && Number.isFinite(Date.parse(site.date))) {
+          missionPanel.updateActiveFlightDates({
+            landingDateIso: new Date(Date.parse(site.date)).toISOString(),
+            dateSource: 'manual',
+          });
+        }
+        missionPanel.openActiveMissionDetail('flight');
+        uiController.setLeftCollapsed(false);
+        uiController.setLeftTab('missions');
+      },
       onAddToMission: (site) => {
         missionPanel.addPointToActiveMission({
           name: site.name,
@@ -297,6 +446,7 @@ async function bootstrap() {
           lon: site.lon,
           note: site.region || site.description || '',
         });
+        missionPanel.openActiveMissionDetail('surface');
         uiController.setLeftCollapsed(false);
         uiController.setLeftTab('missions');
       },
@@ -308,13 +458,23 @@ async function bootstrap() {
 
     uiController.setSearchProvider(() => {
       const mission = missionPanel.getActiveMission();
+      const targetItem = mission?.landingSite
+        ? [
+            {
+              name: `[Target] ${mission.landingSite.name}`,
+              lat: mission.landingSite.lat,
+              lon: mission.landingSite.lon,
+              region: mission.landingSite.note || mission.name,
+            },
+          ]
+        : [];
       const missionPts = (mission?.points || []).map((p) => ({
         name: `[Mission] ${p.name}`,
         lat: p.lat,
         lon: p.lon,
         region: p.note,
       }));
-      return [...missionPts, ...landingSitesMenu.getAllSites()];
+      return [...targetItem, ...missionPts, ...landingSitesMenu.getAllSites()];
     });
 
     uiController.onFlyToSearch((lat, lon, zoom) => {
@@ -399,13 +559,6 @@ async function bootstrap() {
       }
     });
 
-    celestialEnv
-      .loadTrajectory(TRAJECTORY_CONFIG.DEFAULT_URL)
-      .catch((err) => {
-        console.warn('Default cislunar trajectory preload skipped:', err?.message || err);
-        uiController.setTrajectoryError('Trajectory not loaded — use "Load JSON"');
-      });
-
     new SurfaceContextMenu(container, {
       getHoveredCoords: () => latestHoverData,
       getCurrentDate: () =>
@@ -424,6 +577,17 @@ async function bootstrap() {
           sceneManager.setCislunarFocus(focus, { animate: true });
         }
       },
+      onSetMissionTarget: (targetData) => {
+        missionPanel.setActiveLandingSite({
+          name: `Target ${targetData.lat.toFixed(2)}°, ${targetData.lon.toFixed(2)}°`,
+          lat: targetData.lat,
+          lon: targetData.lon,
+          note: `Sun: ${targetData.sunElevDeg >= 0 ? '+' : ''}${targetData.sunElevDeg.toFixed(1)}°`,
+        });
+        missionPanel.openActiveMissionDetail('flight');
+        uiController.setLeftCollapsed(false);
+        uiController.setLeftTab('missions');
+      },
       onAddToMission: (targetData) => {
         missionPanel.addPointToActiveMission({
           name: `Point ${targetData.lat.toFixed(2)}°, ${targetData.lon.toFixed(2)}°`,
@@ -431,6 +595,7 @@ async function bootstrap() {
           lon: targetData.lon,
           note: `Sun: ${targetData.sunElevDeg >= 0 ? '+' : ''}${targetData.sunElevDeg.toFixed(1)}°`,
         });
+        missionPanel.openActiveMissionDetail('surface');
         uiController.setLeftCollapsed(false);
         uiController.setLeftTab('missions');
       },
