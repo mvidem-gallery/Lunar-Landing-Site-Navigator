@@ -7,6 +7,8 @@ class TileCache {
     this.cache = new Map();
     this.pending = new Map();
     this.failed = new Set();
+    this.resolvedTemplates = new Map();
+    this.resolvingPromises = new Map();
     this.queue = [];
     this.activeRequests = 0;
     this.loader = new THREE.TextureLoader();
@@ -43,6 +45,93 @@ class TileCache {
     this.cache.set(key, texture);
   }
 
+  normalizeWmtsTemplate(rawTemplate) {
+    return rawTemplate
+      .replace(/\{Style\}/gi, 'default')
+      .replace(/\{TileMatrixSet\}/gi, 'default028mm')
+      .replace(/\{TileMatrix\}/gi, '{z}')
+      .replace(/\{TileRow\}/gi, '{y}')
+      .replace(/\{TileCol\}/gi, '{x}');
+  }
+
+  async resolveOverlayTemplate(sourceSpec) {
+    if (!sourceSpec || !sourceSpec.isOverlay) return;
+
+    if (this.resolvedTemplates.has(sourceSpec.sourceId)) {
+      return;
+    }
+
+    if (this.resolvingPromises.has(sourceSpec.sourceId)) {
+      await this.resolvingPromises.get(sourceSpec.sourceId);
+      return;
+    }
+
+    const promise = (async () => {
+      try {
+        let capUrl = null;
+
+        // 1. Отримуємо точний productLabel місії Kaguya через параметр q
+        if (sourceSpec.trekDiscoveryQuery) {
+          const searchRes = await fetch(sourceSpec.trekDiscoveryQuery);
+          if (searchRes.ok) {
+            const data = await searchRes.json();
+            const docs = data?.response?.docs || [];
+            // Обираємо глобальну мозаїку Kaguya (виключаючи DEM/Confidence/Apollo)
+            const kaguyaProduct =
+              docs.find(
+                (d) =>
+                  d.productLabel &&
+                  d.productLabel.toLowerCase().includes('kaguya') &&
+                  (d.productCat2 === 'Ortho' || d.productCat2 === 'Mosaic')
+              ) ||
+              docs.find(
+                (d) =>
+                  d.productLabel &&
+                  d.productLabel.toLowerCase().includes('kaguya') &&
+                  !d.productLabel.toLowerCase().includes('dem')
+              );
+
+            if (kaguyaProduct?.productLabel) {
+              capUrl = `https://trek.nasa.gov/tiles/Moon/EQ/${kaguyaProduct.productLabel}/1.0.0/WMTSCapabilities.xml`;
+            }
+          }
+        }
+
+        // 2. Резервний шлях до WMTSCapabilities.xml з базового URL
+        if (!capUrl && sourceSpec.url.includes('trek.nasa.gov')) {
+          const baseEnd = sourceSpec.url.indexOf('/1.0.0/');
+          if (baseEnd !== -1) {
+            capUrl = `${sourceSpec.url.substring(0, baseEnd)}/1.0.0/WMTSCapabilities.xml`;
+          }
+        }
+
+        if (!capUrl) return;
+
+        const response = await fetch(capUrl);
+        if (!response.ok) return;
+
+        const xmlText = await response.text();
+        const xmlDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
+        const resourceUrl = xmlDoc.querySelector('ResourceURL');
+
+        if (resourceUrl) {
+          const rawTemplate = resourceUrl.getAttribute('template');
+          if (rawTemplate) {
+            const normalized = this.normalizeWmtsTemplate(rawTemplate);
+            this.resolvedTemplates.set(sourceSpec.sourceId, normalized);
+          }
+        }
+      } catch {
+        // Використовуємо статичний URL з constants.js у разі мережевої помилки
+      } finally {
+        this.resolvingPromises.delete(sourceSpec.sourceId);
+      }
+    })();
+
+    this.resolvingPromises.set(sourceSpec.sourceId, promise);
+    await promise;
+  }
+
   requestTile(sourceSpec, z, x, y, priority, onLoad, onError) {
     const key = `${sourceSpec.sourceId}_${z}_${y}_${x}`;
 
@@ -57,10 +146,12 @@ class TileCache {
       return;
     }
 
+    const effectivePriority = sourceSpec.isLocal ? priority - 1000 : priority;
+
     if (this.pending.has(key)) {
       const entry = this.pending.get(key);
       entry.callbacks.push({ onLoad, onError });
-      entry.priority = Math.min(entry.priority, priority);
+      entry.priority = Math.min(entry.priority, effectivePriority);
       return;
     }
 
@@ -70,7 +161,7 @@ class TileCache {
       z,
       x,
       y,
-      priority,
+      priority: effectivePriority,
       callbacks: [{ onLoad, onError }],
     };
 
@@ -80,28 +171,44 @@ class TileCache {
   }
 
   buildUrl(urlTemplate, z, x, y, isWebMercatorQuad) {
+    let targetX = x;
     let targetY = y;
+
     if (isWebMercatorQuad) {
-      const maxRow = Math.pow(2, z) - 1;
-      targetY = maxRow - y;
+      // Перетворення з рівнопроміжної сітки вузлів (2^(z+1) x 2^z) у квадратну сітку (2^z x 2^z)
+      targetX = Math.floor(x / 2);
+      // Для S3 opmbuilder (TMS) вісь Y інвертована; для стандартного XYZ — без інверсії
+      if (urlTemplate.includes('opmbuilder')) {
+        const maxRow = Math.pow(2, z) - 1;
+        targetY = maxRow - y;
+      }
     }
+
     return urlTemplate
       .replace('{z}', z)
-      .replace('{x}', x)
+      .replace('{x}', targetX)
       .replace('{y}', targetY);
   }
-
   processQueue() {
-    if (this.activeRequests >= LOD_CONFIG.MAX_CONCURRENT_REQUESTS || this.queue.length === 0) {
-      return;
+    while (this.activeRequests < LOD_CONFIG.MAX_CONCURRENT_REQUESTS && this.queue.length > 0) {
+      this.queue.sort((a, b) => a.priority - b.priority);
+      const entry = this.queue.shift();
+      this.activeRequests++;
+
+      this.startEntryDownload(entry);
+    }
+  }
+
+  async startEntryDownload(entry) {
+    if (entry.sourceSpec.isOverlay) {
+      await this.resolveOverlayTemplate(entry.sourceSpec);
     }
 
-    this.queue.sort((a, b) => a.priority - b.priority);
-    const entry = this.queue.shift();
-    this.activeRequests++;
+    const activeTemplate =
+      this.resolvedTemplates.get(entry.sourceSpec.sourceId) || entry.sourceSpec.url;
 
     const primaryUrl = this.buildUrl(
-      entry.sourceSpec.url,
+      activeTemplate,
       entry.z,
       entry.x,
       entry.y,
@@ -141,8 +248,8 @@ class TileCache {
       primaryUrl,
       handleSuccess,
       undefined,
-() => {
-        if (entry.sourceSpec.fallbackUrl && entry.z <= 8) {
+      () => {
+        if (entry.sourceSpec.fallbackUrl) {
           const fbUrl = this.buildUrl(
             entry.sourceSpec.fallbackUrl,
             entry.z,
@@ -151,6 +258,11 @@ class TileCache {
             entry.sourceSpec.isWebMercatorQuad
           );
           this.loader.load(fbUrl, handleSuccess, undefined, handleFinalFailure);
+        } else if (entry.sourceSpec.isOverlay) {
+          const altUrl = primaryUrl.endsWith('.jpg')
+            ? primaryUrl.replace(/\.jpg$/, '.png')
+            : primaryUrl.replace(/\.png$/, '.jpg');
+          this.loader.load(altUrl, handleSuccess, undefined, handleFinalFailure);
         } else {
           handleFinalFailure();
         }
@@ -188,7 +300,10 @@ class QuadNode {
       this.latEnd
     );
 
-    if (!this.sourceSpec) {
+    if (
+      !this.sourceSpec &&
+      !manager.hasPotentialOverlay(this.z, this.lonStart, this.lonEnd, this.latStart, this.latEnd)
+    ) {
       this.hasFailed = true;
     }
 
@@ -221,7 +336,11 @@ class QuadNode {
 
     const segs = this.z <= 4 ? 16 : this.z <= 8 ? 8 : 4;
     const isOverlay = Boolean(this.sourceSpec && this.sourceSpec.isOverlay);
-    const radiusOffset = MOON_CONFIG.RADIUS + this.z * 0.000012;
+
+    const layer = MAP_LAYERS[this.manager.currentLayerId];
+    const baseMax = layer ? (layer.baseMaxZoom ?? 8) : 8;
+    const radiusOffset =
+      MOON_CONFIG.RADIUS + (isOverlay ? 0.000001 * Math.max(1, this.z - baseMax) : 0);
 
     const geometry = new THREE.SphereGeometry(
       radiusOffset,
@@ -236,7 +355,7 @@ class QuadNode {
     const material = this.manager.createTileMaterial(texture, isOverlay, this.z);
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.rotation.y = Math.PI;
-    this.mesh.renderOrder = isOverlay ? 2 : 1;
+    this.mesh.renderOrder = isOverlay ? 2 + (this.z - baseMax) : 1;
     this.mesh.visible = false;
     this.manager.group.add(this.mesh);
   }
@@ -325,9 +444,6 @@ export class QuadtreeTileManager {
     return Math.pow(2, z);
   }
 
-  /**
-   * Перевіряє перетин географічного прямокутника тайлу з межами оверлею.
-   */
   _intersectsBounds(lonStart, lonEnd, latStart, latEnd, bounds) {
     if (!bounds) return true;
     return (
@@ -338,9 +454,16 @@ export class QuadtreeTileManager {
     );
   }
 
-  /**
-   * Визначає джерело тайлу: глобальний шар для Z <= baseMaxZoom або регіональний оверлей для Z > baseMaxZoom.
-   */
+  hasPotentialOverlay(z, lonStart, lonEnd, latStart, latEnd) {
+    const layer = MAP_LAYERS[this.currentLayerId];
+    if (!layer || !Array.isArray(layer.overlays)) return false;
+
+    return layer.overlays.some((ov) => {
+      const ovMax = ov.maxZoom ?? layer.maxZoom ?? LOD_CONFIG.MAX_ZOOM;
+      return z <= ovMax && this._intersectsBounds(lonStart, lonEnd, latStart, latEnd, ov.bounds);
+    });
+  }
+
   resolveTileSource(z, lonStart, lonEnd, latStart, latEnd) {
     const layer = MAP_LAYERS[this.currentLayerId];
     if (!layer) return null;
@@ -351,9 +474,10 @@ export class QuadtreeTileManager {
       return {
         sourceId: layer.id,
         url: layer.url,
-        fallbackUrl: layer.fallbackUrl,
+        fallbackUrl: layer.fallbackUrl ?? null,
         isWebMercatorQuad: Boolean(layer.isWebMercatorQuad),
         isOverlay: false,
+        isLocal: layer.url.startsWith('/') || layer.url.startsWith('./'),
       };
     }
 
@@ -361,13 +485,19 @@ export class QuadtreeTileManager {
       for (const overlay of layer.overlays) {
         const minZ = overlay.minZoom ?? baseMax + 1;
         const maxZ = overlay.maxZoom ?? layer.maxZoom;
-        if (z >= minZ && z <= maxZ && this._intersectsBounds(lonStart, lonEnd, latStart, latEnd, overlay.bounds)) {
+        if (
+          z >= minZ &&
+          z <= maxZ &&
+          this._intersectsBounds(lonStart, lonEnd, latStart, latEnd, overlay.bounds)
+        ) {
           return {
             sourceId: overlay.id,
             url: overlay.url,
-            fallbackUrl: null,
+            fallbackUrl: overlay.fallbackUrl ?? null,
+            trekDiscoveryQuery: overlay.trekDiscoveryQuery ?? null,
             isWebMercatorQuad: Boolean(overlay.isWebMercatorQuad),
             isOverlay: true,
+            isLocal: false,
           };
         }
       }
@@ -376,9 +506,6 @@ export class QuadtreeTileManager {
     return null;
   }
 
-  /**
-   * Перевіряє, чи має вузол потенціал подальшого поділу на рівні Z + 1.
-   */
   canNodeSplit(node) {
     const layer = MAP_LAYERS[this.currentLayerId];
     if (!layer) return false;
@@ -390,14 +517,7 @@ export class QuadtreeTileManager {
     const baseMax = layer.baseMaxZoom ?? maxLayerZoom;
     if (nextZ <= baseMax) return true;
 
-    if (!Array.isArray(layer.overlays) || layer.overlays.length === 0) {
-      return false;
-    }
-
-    return layer.overlays.some((ov) => {
-      const ovMax = ov.maxZoom ?? maxLayerZoom;
-      return nextZ <= ovMax && this._intersectsBounds(node.lonStart, node.lonEnd, node.latStart, node.latEnd, ov.bounds);
-    });
+    return this.hasPotentialOverlay(nextZ, node.lonStart, node.lonEnd, node.latStart, node.latEnd);
   }
 
   initRoots() {
@@ -423,7 +543,7 @@ export class QuadtreeTileManager {
   }
 
   switchMapLayer(layerId) {
-    if (!MAP_LAYERS[layerId] || this.currentLayerId === layerId) return;
+    if (!layerId || !MAP_LAYERS[layerId] || this.currentLayerId === layerId) return;
     this.currentLayerId = layerId;
     this.cache.clear();
     this.initRoots();
@@ -605,7 +725,7 @@ export class QuadtreeTileManager {
         return;
       }
 
-      const distToCamera = Math.max(0.0005, camPos.distanceTo(node.centerWorld) - node.boundingRadius * 0.5);
+      const distToCamera = Math.max(0.00005, camPos.distanceTo(node.centerWorld) - node.boundingRadius * 0.5);
       const tileArcLength = (Math.PI * MOON_CONFIG.RADIUS) / Math.pow(2, node.z);
       const screenRatio = tileArcLength / distToCamera;
 
@@ -616,22 +736,20 @@ export class QuadtreeTileManager {
           node.split();
         }
 
-        const isTransitionToOverlay = node.z === baseMaxZoom;
+        const isOverlayZone = node.z >= baseMaxZoom;
 
-        if (isTransitionToOverlay) {
-          // Базовий тайл Z8 завжди залишається видимою підкладкою,
-          // а дочірні оверлеї Z9+ підвантажуються і накладаються зверху лише в межах своїх bounds
+        if (isOverlayZone) {
           if (node.isReady && node.mesh) {
             node.mesh.visible = true;
             highestVisibleZoom = Math.max(highestVisibleZoom, node.z);
           }
 
           for (const child of node.children) {
-            if (!child.sourceSpec || child.hasFailed) {
+            if (child.hasFailed) {
               if (child.mesh) child.mesh.visible = false;
               continue;
             }
-            if (!child.isReady) {
+            if (child.sourceSpec && !child.isReady) {
               child.requestTexture(distToCamera);
               if (child.mesh) child.mesh.visible = false;
             } else {
@@ -678,7 +796,7 @@ export class QuadtreeTileManager {
         if (node.children) {
           node.merge();
         }
-        if (!node.isReady) {
+        if (!node.isReady && node.sourceSpec) {
           node.requestTexture(distToCamera);
         }
         if (node.isReady && node.mesh) {

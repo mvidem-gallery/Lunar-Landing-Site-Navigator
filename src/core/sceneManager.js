@@ -14,7 +14,7 @@ export class SceneManager {
     this.camera = new THREE.PerspectiveCamera(
       45,
       window.innerWidth / window.innerHeight,
-      0.0001,
+      0.000005,
       2000
     );
     this.camera.position.set(this.initialDistance, 0, 0);
@@ -33,7 +33,7 @@ export class SceneManager {
     this.controls.enableZoom = false;
     this.controls.enablePan = false;
 
-    this.minSurfaceClearance = 0.001;
+    this.minSurfaceClearance = 0.00003;
     this.minRadialDistance = MOON_CONFIG.RADIUS + this.minSurfaceClearance;
     this.maxRadialDistance = 10.0;
 
@@ -79,11 +79,10 @@ export class SceneManager {
     const latRad = THREE.MathUtils.degToRad(latDeg);
     const lonRad = THREE.MathUtils.degToRad(lonDeg);
 
-    // ІНВЕРСІЯ X та Z для точного збігу з поворотом місячної сфери на Math.PI!
     const dir = new THREE.Vector3(
-      -Math.cos(latRad) * Math.cos(lonRad), // Було +, стало -
+      -Math.cos(latRad) * Math.cos(lonRad),
       Math.sin(latRad),
-      Math.cos(latRad) * Math.sin(lonRad)   // Було -, стало +
+      Math.cos(latRad) * Math.sin(lonRad)
     ).normalize();
 
     const targetAltitude = THREE.MathUtils.clamp(
@@ -108,8 +107,8 @@ export class SceneManager {
 
     this.controls.target.set(0, 0, 0);
 
-    const altitude = Math.max(0.0005, smoothedDist - MOON_CONFIG.RADIUS);
-    const angularScale = THREE.MathUtils.clamp(altitude * 0.38, 0.0015, 0.4);
+    const altitude = Math.max(0.00003, smoothedDist - MOON_CONFIG.RADIUS);
+    const angularScale = THREE.MathUtils.clamp(altitude * 0.38, 0.00012, 0.4);
 
     this.controls.rotateSpeed = angularScale;
   }
