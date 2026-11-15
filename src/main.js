@@ -395,6 +395,9 @@ async function bootstrap() {
             ? new Date(mission.flight.landingDateIso)
             : currentSimulationDate;
         const targetData = {
+          missionId: mission.id,
+          missionName: mission.name,
+          pointName: mission.landingSite.name,
           lat: mission.landingSite.lat,
           lon: mission.landingSite.lon,
           date: new Date(date.getTime()),
@@ -604,16 +607,20 @@ async function bootstrap() {
       },
       onLandTo: (targetData) => {
         if (sceneManager.viewMode === VIEW_MODES.CISLUNAR) return;
+        const activeMission = missionPanel?.getActiveMission();
+        const enrichedTarget = activeMission
+          ? { missionId: activeMission.id, missionName: activeMission.name, ...targetData }
+          : targetData;
         window.dispatchEvent(
           new CustomEvent('lunar:land-to', {
-            detail: targetData,
+            detail: enrichedTarget,
           })
         );
 
         if (window.SurfaceRendererBridge && typeof window.SurfaceRendererBridge.open === 'function') {
-          window.SurfaceRendererBridge.open(targetData);
+          window.SurfaceRendererBridge.open(enrichedTarget);
         } else {
-          lunarHorizonModal.open(targetData);
+          lunarHorizonModal.open(enrichedTarget);
         }
       },
     });

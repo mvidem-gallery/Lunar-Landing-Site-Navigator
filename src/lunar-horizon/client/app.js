@@ -6,9 +6,11 @@ import {landingSurface} from './terrain-mesh.js?v=overview-v2';
 import * as THREE from './three.js?v=terrain-v3';
 import {direction,interpolate,horizonAt,dot,D,integrate,integrateOverlap,landerOrbitPosition} from './math.js?v=orbit-v1';
 import {GLOBAL_WIDTH, GLOBAL_HEIGHT, loadPackedDem} from './dem.js?v=terrain-v3';
+import {MISSIONS_STORAGE_KEY, MissionWorkspace} from './missions.js?v=flightdeck-v2';
 const $=id=>document.getElementById(id),fmt=(v,n=1)=>new Intl.NumberFormat('en-GB',{maximumFractionDigits:n,minimumFractionDigits:n}).format(v),deg=v=>fmt(v)+'°';
 let orbitalTexture, orbitalDetailTexture, imageryRequest, imageryLabel, imageryEnabled = true;
 let near,far,nm,fm,globalDem,polarDemRequest,terrain,ephem,analysis=[],mission,playing=false,t=0,lastFrame=0,az=0,pitch=4,mesh,version=0;
+let missionWorkspace = null;
 const scene=new THREE.Scene();scene.background=new THREE.Color('#030508');
 const camera=new THREE.PerspectiveCamera(65,1,.15,2000000);camera.rotation.order='YXZ';
 let renderer,webglAvailable=true;
@@ -29,6 +31,7 @@ function applyLighting() {
   light.intensity = reliefLighting ? 0 : solarIntensity;
   reliefKey.visible = reliefFill.visible = reliefLighting;
   $('reliefLight').setAttribute('aria-pressed', String(reliefLighting));
+  $('reliefLight').classList.toggle('active', reliefLighting);
 }
 $('reliefLight').onclick = () => {
   reliefLighting = !reliefLighting;
@@ -65,30 +68,86 @@ const ro = new ResizeObserver(() => {
   drawTracks();
 });
 ro.observe($('canvas'));
-const surfaceView = $('scene');
-const parameters = $('missionParameters');
-function setParameters(open) {
-  parameters.hidden = !open;
-  $('parametersToggle').setAttribute('aria-expanded', String(open));
-  if (!open && parameters.contains(document.activeElement)) $('parametersToggle').focus();
-}
-setParameters(!matchMedia('(max-width: 950px)').matches);
-$('parametersToggle').onclick = () => {
-  const open = parameters.hidden;
-  if (open && matchMedia('(max-width: 950px)').matches) setMissionInfo(false);
-  setParameters(open);
+
+// Left dock (icon rail + drawer: Missions | Parameters | Metadata)
+const LEFT_TAB_META = {
+  missions: { title: 'Mission', badge: 'MISSION' },
+  params: { title: 'Simulation', badge: 'PARAMETERS' },
+  metadata: { title: 'Telemetry', badge: 'METADATA' },
 };
-$('closeParameters').onclick = () => setParameters(false);
-const missionInfoPanel = $('missionInfoPanel');
-function setMissionInfo(open) {
-  if (open && matchMedia('(max-width: 950px)').matches) setParameters(false);
-  missionInfoPanel.hidden = !open;
-  $('missionInfo').setAttribute('aria-expanded', String(open));
-  if (!open) $('missionInfo').focus({preventScroll: true});
-  drawTracks();
+let activeLeftTab = 'missions';
+const railTabBtns = Array.from(document.querySelectorAll('[data-rail-tab]'));
+
+function setLeftCollapsed(collapsed) {
+  document.body.classList.toggle('left-collapsed', Boolean(collapsed));
+  const btn = $('left-collapse-btn');
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    btn.title = collapsed ? 'Expand Left Panel' : 'Collapse Left Panel';
+  }
+  requestAnimationFrame(drawTracks);
+  setTimeout(drawTracks, 220);
 }
-$('missionInfo').onclick = () => setMissionInfo(missionInfoPanel.hidden);
-$('closeMissionInfo').onclick = () => setMissionInfo(false);
+
+function setLeftTab(tab) {
+  const next = LEFT_TAB_META[tab] ? tab : 'missions';
+  activeLeftTab = next;
+  if (document.body.classList.contains('left-collapsed')) {
+    setLeftCollapsed(false);
+  }
+  for (const btn of railTabBtns) {
+    btn.classList.toggle('active', btn.dataset.railTab === next);
+  }
+  for (const key of Object.keys(LEFT_TAB_META)) {
+    $('tab-' + key)?.classList.toggle('active', key === next);
+  }
+  $('left-drawer-title').textContent = LEFT_TAB_META[next].title;
+  $('left-drawer-badge').textContent = LEFT_TAB_META[next].badge;
+  if (next === 'metadata') requestAnimationFrame(drawTracks);
+}
+
+for (const btn of railTabBtns) {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.railTab;
+    if (!document.body.classList.contains('left-collapsed') && activeLeftTab === tab) {
+      setLeftCollapsed(true);
+    } else {
+      setLeftTab(tab);
+    }
+  });
+}
+
+$('left-collapse-btn')?.addEventListener('click', () => {
+  setLeftCollapsed(!document.body.classList.contains('left-collapsed'));
+});
+
+$('top-mission-pill')?.addEventListener('click', () => {
+  setLeftTab('missions');
+  missionWorkspace?.openList();
+});
+
+$('bts-meta-btn')?.addEventListener('click', () => {
+  setLeftTab('metadata');
+});
+
+setLeftCollapsed(matchMedia('(max-width: 760px)').matches);
+
+function bindCollapsible(btnId, bodyId, expandLabel, collapseLabel) {
+  const btn = $(btnId);
+  const body = $(bodyId);
+  if (!btn || !body) return;
+  btn.addEventListener('click', () => {
+    const collapsed = !body.classList.contains('collapsed');
+    body.classList.toggle('collapsed', collapsed);
+    btn.classList.toggle('collapsed', collapsed);
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    btn.title = collapsed ? expandLabel : collapseLabel;
+  });
+}
+
+bindCollapsible('top-bar-collapse-btn', 'top-controls-body', 'Expand Quick Points Bar', 'Collapse Quick Points Bar');
+bindCollapsible('right-toolbar-collapse-btn', 'right-toolbar-body', 'Expand Camera & Display Tools', 'Collapse Camera & Display Tools');
+bindCollapsible('bts-collapse-btn', 'bts-cells', 'Expand Telemetry Readout', 'Collapse Telemetry Readout');
 
 const dateAnalysis = document.querySelector('.suitability');
 function syncDateAnalysis() {
@@ -113,28 +172,44 @@ $('panelRetryWindow').onclick = () => $('retryWindow').click();
 
 document.addEventListener('keydown', event => {
   if (event.key !== 'Escape' || $('info').open) return;
-  if (!missionInfoPanel.hidden) setMissionInfo(false);
-  else if (!parameters.hidden) setParameters(false);
+  if (!document.body.classList.contains('left-collapsed') && matchMedia('(max-width: 820px)').matches) {
+    setLeftCollapsed(true);
+  }
 });
-const timelinePanel = surfaceView.querySelector('.timeline-controls');
-new ResizeObserver(drawTracks).observe(timelinePanel);
+
+const timelineTrackArea = document.querySelector('.timeline-track-area');
+if (timelineTrackArea) new ResizeObserver(drawTracks).observe(timelineTrackArea);
 const sceneConsole = $('sceneConsole');
-const consoleContent = $('consoleContent');
 const consoleToggle = $('consoleToggle');
 consoleToggle.onclick = () => {
-  const open = consoleContent.hidden;
-  consoleContent.hidden = !open;
+  const open = sceneConsole.classList.contains('is-collapsed');
   sceneConsole.classList.toggle('is-collapsed', !open);
+  consoleToggle.classList.toggle('collapsed', !open);
   consoleToggle.setAttribute('aria-expanded', String(open));
-  const label = open ? 'Hide timeline and camera controls' : 'Show timeline and camera controls';
+  const label = open ? 'Hide timeline controls' : 'Show timeline controls';
   consoleToggle.setAttribute('aria-label', label);
   consoleToggle.title = label;
+  if (open) requestAnimationFrame(drawTracks);
 };
-new ResizeObserver(([entry]) => {
-  surfaceView.style.setProperty('--console-height', `${entry.target.offsetHeight}px`);
-}).observe(sceneConsole);
 
-function status(text,error=false){$('status').textContent=text;$('status').style.color=error?'#ef4444':'#4db5ff';}
+let isSimulationBusy = false;
+let lastStatusError = false;
+
+function syncStatusIndicator() {
+  const icon = $('bts-status-icon');
+  if (!icon) return;
+  icon.classList.toggle('error', lastStatusError);
+  icon.classList.toggle('loading', !lastStatusError && isSimulationBusy);
+}
+
+function status(text, error = false) {
+  lastStatusError = Boolean(error);
+  const el = $('status');
+  el.textContent = text;
+  el.title = text;
+  el.style.color = error ? '#ef4444' : '#f4f7fa';
+  syncStatusIndicator();
+}
 function showProgress(kind, complete, total, note = '') {
   $(kind + 'LoadingRow').hidden = false;
   const bar = $(kind + 'Progress');
@@ -146,7 +221,13 @@ function showProgress(kind, complete, total, note = '') {
   }
   $(kind + 'ProgressCount').textContent = note;
 }
-function setBusy(b){$('missionLoadingRow').hidden = !b;$('calculate').disabled=b;$('calculate').innerHTML=b?'CALCULATING…':'CALCULATE MISSION <span>↗</span>';}
+function setBusy(b) {
+  isSimulationBusy = Boolean(b);
+  $('missionLoadingRow').hidden = !b;
+  $('calculate').disabled = b;
+  $('calculate').innerHTML = b ? 'CALCULATING…' : 'CALCULATE MISSION <span>↗</span>';
+  syncStatusIndicator();
+}
 const lander = createLander();
 lander.visible = false;
 scene.add(lander);
@@ -229,8 +310,11 @@ function setLanderView(on) {
   if (overview || on === inspectingLander || (on && !terrain)) return;
   drag = null;
   inspectingLander = on;
-  $('inspectLander').setAttribute('aria-pressed', String(on));
-  $('inspectLander').textContent = on ? 'Observer' : 'Lander';
+  const btn = $('inspectLander');
+  btn.setAttribute('aria-pressed', String(on));
+  btn.classList.toggle('active', on);
+  btn.textContent = on ? 'OBS' : 'LND';
+  btn.title = on ? 'Return to Observer surface view' : 'Orbit around the lander';
   if (on) {
     observerView = {az, pitch, fov: camera.fov};
     orbitAzimuth = 140;
@@ -265,12 +349,17 @@ $('demResolution').textContent = data.resolution === 3790 ? 'Overview DEM · ≈
   : data.resolution === 474 ? 'Regional LOLA DEM · ≈474 m grid'
     : `Polar DEM · ${data.resolution} m/pixel`;}
 function applyImagery() {
-  $('imagery').setAttribute('aria-pressed', String(imageryEnabled));
+  const btn = $('imagery');
+  btn.setAttribute('aria-pressed', String(imageryEnabled));
+  btn.classList.toggle('active', imageryEnabled);
   if (!mesh) return;
   mesh.material.map = imageryEnabled && orbitalTexture ? orbitalTexture : null;
   mesh.material.color.set(mesh.material.map ? 0xffffff : 0x898783);
   mesh.material.needsUpdate = true;
-  $('imageryStatus').textContent = imageryEnabled ? imageryLabel : 'Geometry lighting only';
+  const imgEl = $('imageryStatus');
+  const text = imageryEnabled ? (imageryLabel || 'Loading…') : 'Geometry lighting only';
+  imgEl.textContent = text;
+  imgEl.title = text;
 }
 $('imagery').onclick = () => {imageryEnabled = !imageryEnabled; applyImagery();};
 async function loadOrbitalImagery(data, target) {
@@ -452,19 +541,28 @@ if (key === 'sm') $('timelineSunTotal').textContent = total;
 if (key === 'em') $('timelineEarthTotal').textContent = total;}drawTracks();}
 function drawTracks(){if(!analysis.length||!mission)return;for(const [id,key,color]of [['sunTrack','sm','#f59e0b'],['earthTrack','em','#0095ff']]){const c=$(id),ctx=c.getContext('2d'),width=c.clientWidth;if(!width)continue;c.width=Math.max(100,width*2);c.height=20;ctx.fillStyle='rgba(255, 255, 255, 0.08)';ctx.fillRect(0,0,c.width,20);ctx.fillStyle=color;for(let i=1;i<analysis.length;i++){const a=analysis[i-1],b=analysis[i];let left=a.t,right=b.t;if(a[key]<=0&&b[key]<=0)continue;if(a[key]<=0)left=a.t+(b.t-a.t)*(-a[key])/(b[key]-a[key]);if(b[key]<=0)right=a.t+(b.t-a.t)*a[key]/(a[key]-b[key]);ctx.fillRect((left-mission.start)/(mission.end-mission.start)*c.width,0,Math.max(.4,(right-left)/(mission.end-mission.start)*c.width),20);}}}
 const dateLabel=(time,full=false)=>new Date(time).toLocaleString('en-GB',{timeZone:'UTC',day:'2-digit',month:'2-digit',...(full?{year:'numeric',hour:'2-digit',minute:'2-digit'}:{})});
-function update(){if(!ephem||!terrain)return;const v=evaluate(t);$('sunEl').textContent=deg(v.s[2]);$('sunAz').textContent=deg(v.s[1]);$('earthEl').textContent=deg(v.e[2]);$('incidence').textContent=deg(v.inc);$('distance').textContent=fmt(v.e[4],0)+' km';$('delay').textContent=fmt(v.e[4]/299792.458,2)+' / '+fmt(v.e[4]/299792.458*2,2)+' s';$('sunState').textContent=v.sm>0?'SUNLIT':'SHADOW';$('sunState').classList.toggle('on',v.sm>0);$('earthState').textContent=v.em>0?'VISIBLE':'OCCLUDED';$('earthState').classList.toggle('on',v.em>0);const timestamp = dateLabel(t, true);
+function update(){if(!ephem||!terrain)return;const v=evaluate(t);$('sunEl').textContent=deg(v.s[2]);$('sunAz').textContent=deg(v.s[1]);$('earthEl').textContent=deg(v.e[2]);$('incidence').textContent=deg(v.inc);$('distance').textContent=fmt(v.e[4],0)+' km';$('delay').textContent=fmt(v.e[4]/299792.458,2)+' / '+fmt(v.e[4]/299792.458*2,2)+' s';$('sunState').textContent=v.sm>0?'SUNLIT':'SHADOW';$('sunState').classList.toggle('on',v.sm>0);$('earthState').textContent=v.em>0?'VISIBLE':'OCCLUDED';$('earthState').classList.toggle('on',v.em>0);
+if ($('bts-sun-el')) $('bts-sun-el').textContent = deg(v.s[2]);
+if ($('bts-earth-el')) $('bts-earth-el').textContent = deg(v.e[2]);
+const timestamp = dateLabel(t, true);
 $('currentTime').textContent = timestamp + ' UTC';
 const progress = Math.max(0, Math.min(1, (t - mission.start) / (mission.end - mission.start)));
 timeSlider.value = progress * 1000;
 trackTimeMarker.style.left = `${progress * 100}%`;
 trackTimeMarker.hidden = false;
 updateSkyObjects(v);
+updateCompass(inspectingLander ? orbitAzimuth + 180 : az, v.s[1]);
 const dir=direction(v.s[1],v.s[2]);light.position.set(...dir.map(x=>x*10000));solarIntensity=v.s[2]>-2?3.1:0;applyLighting();}
 let discMagnification = 3;
 $('discScale').onclick = () => {
   discMagnification = discMagnification === 3 ? 1 : 3;
-  $('discScale').textContent = discMagnification === 3 ? 'Discs ×3' : 'Discs 1:1';
-  $('discScale').setAttribute('aria-pressed', String(discMagnification === 3));
+  const btn = $('discScale');
+  btn.textContent = discMagnification === 3 ? '×3' : '1:1';
+  btn.setAttribute('aria-pressed', String(discMagnification === 3));
+  btn.classList.toggle('active', discMagnification === 3);
+  btn.title = discMagnification === 3
+    ? 'Discs 3× magnified (click for true 1:1 angular size)'
+    : 'True 1:1 angular size (click for 3×)';
   if (ephem && terrain && !overview) updateSkyObjects(evaluate(t));
 };
 function updateSkyObjects({s, e}) {
@@ -525,10 +623,27 @@ $('resetLift').onclick = () => {
   pitch = 4;
   orient();
 };
-function updateCompass(heading) {
+function updateCompass(heading, sunAz = null) {
   const angle = (heading % 360 + 360) % 360;
   $('compass').textContent = ['N','NE','E','SE','S','SW','W','NW'][Math.round(angle / 45) % 8]
     + ' · ' + String(Math.round(angle) % 360).padStart(3, '0') + '°';
+  const needle = $('compass-needle');
+  if (needle) {
+    needle.style.transform = `rotate(${-angle}deg)`;
+  }
+  const sunDot = $('compass-sun-dot');
+  if (sunDot) {
+    const resolvedSunAz = Number.isFinite(sunAz)
+      ? sunAz
+      : (ephem ? interpolate(ephem.sun, t)[1] : NaN);
+    if (Number.isFinite(resolvedSunAz)) {
+      const relDeg = (resolvedSunAz - angle + 360) % 360;
+      sunDot.hidden = false;
+      sunDot.style.transform = `translate(-50%, -50%) rotate(${relDeg}deg) translateY(-16px)`;
+    } else {
+      sunDot.hidden = true;
+    }
+  }
 }
 function orient() {
   camera.rotation.set(pitch * D, -az * D, 0);
@@ -603,6 +718,11 @@ function readCoordinate(id, limit, label) {
     throw new Error(`${label}: enter a number from −${limit} to ${limit} (for example, -12.5).`);
   }
   return value;
+}
+function readCoordSafe(id) {
+  const raw = ($(id)?.value || '').trim().replace(/^−/, '-').replace(',', '.');
+  const val = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(raw) ? Number(raw) : NaN;
+  return Number.isFinite(val) ? val : null;
 }
 const IS_LITTLE_ENDIAN = new Uint16Array(new Uint8Array([1, 0]).buffer)[0] === 1;
 const detailTileCache = new Map();
@@ -833,6 +953,34 @@ async function loadEphemeris(m, ground) {
   return data;
 }
 
+function applyPointCoordsToInputs(point) {
+  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return;
+  $('lat').value = Number(point.lat).toFixed(5);
+  $('lon').value = Number(point.lon).toFixed(5);
+}
+
+function applyMissionDatesToInputs(selectedMission) {
+  const landingIso = selectedMission?.flight?.landingDateIso;
+  if (!landingIso) return false;
+  const landingMs = Date.parse(landingIso);
+  const minMs = Date.UTC(2000, 0, 1, 0, 0, 0);
+  const maxStartMs = Date.UTC(2100, 10, 30, 23, 59, 0);
+  const maxEndMs = Date.UTC(2100, 11, 31, 23, 0, 0);
+  if (!Number.isFinite(landingMs) || landingMs < minMs || landingMs > maxStartMs) {
+    return false;
+  }
+  const curStart = Date.parse($('start').value + 'Z');
+  const curEnd = Date.parse($('end').value + 'Z');
+  const curDuration = Number.isFinite(curStart) && Number.isFinite(curEnd) && curEnd > curStart && curEnd - curStart <= 365 * DAY
+    ? curEnd - curStart
+    : 30 * DAY;
+  const startMs = landingMs;
+  const endMs = Math.min(maxEndMs, startMs + curDuration);
+  $('start').value = new Date(startMs).toISOString().slice(0, 16);
+  $('end').value = new Date(endMs).toISOString().slice(0, 16);
+  return true;
+}
+
 async function calculate(){const current=++version;let showOverview = true;
 try{setBusy(true);
 showProgress('mission');
@@ -846,6 +994,7 @@ $('darkResult').textContent = 'Waiting for calculation.';
 $('earthOutage').textContent = '';
 $('alternative').textContent = '';playing=false;$('play').textContent='▶';const m={lat:readCoordinate('lat',90,'Latitude'),lon:readCoordinate('lon',180,'Longitude'),height:Number($('height').value),darkDays:readCoordinate('darkLimit',365,'Endurance'),start:Date.parse($('start').value+'Z'),end:Date.parse($('end').value+'Z'),step:Number($('step').value)};
 if(!Object.values(m).every(Number.isFinite)||m.height<.1||m.height>100||m.start>=m.end||m.end-m.start>365*DAY||m.darkDays<0||m.start<Date.parse('2000-01-01')||m.end>=Date.parse('2101-01-01'))throw new Error('Check observer height (0.1–100 m), dates (2000–2100) and mission duration (up to 365 days).');
+missionWorkspace?.syncWithExternalParams({lat: m.lat, lon: m.lon});
 const requestedStep = m.step;
 m.step = effectiveStep(m.end - m.start, requestedStep);
 $('play').disabled=true;timeSlider.disabled = true;$('export').disabled=true;
@@ -919,6 +1068,64 @@ try {
       $('step').value = requestedStep;
     }
   }
+
+  missionWorkspace = new MissionWorkspace({
+    container: $('mission-workspace-slot'),
+    quickBarContainer: $('quick-point-chips'),
+    onSelectMission(selectedMission, point) {
+      applyPointCoordsToInputs(point);
+      applyMissionDatesToInputs(selectedMission);
+      void calculate();
+    },
+    onSelectPoint(point) {
+      applyPointCoordsToInputs(point);
+      void calculate();
+    },
+    onRequestParams() {
+      setLeftTab('params');
+    },
+    getCurrentCoords() {
+      return { lat: readCoordSafe('lat'), lon: readCoordSafe('lon') };
+    },
+    getCurrentDates() {
+      const startMs = Date.parse(($('start')?.value || '') + 'Z');
+      const endMs = Date.parse(($('end')?.value || '') + 'Z');
+      return {
+        startIso: Number.isFinite(startMs) ? new Date(startMs).toISOString() : null,
+        endIso: Number.isFinite(endMs) ? new Date(endMs).toISOString() : null,
+      };
+    },
+  });
+
+  if (query.has('lat') && query.has('lon')) {
+    missionWorkspace.syncWithExternalParams({
+      missionId: query.get('missionId'),
+      lat: readCoordSafe('lat'),
+      lon: readCoordSafe('lon'),
+    });
+  } else {
+    let hasStoredMissions = false;
+    try {
+      hasStoredMissions = Boolean(localStorage.getItem(MISSIONS_STORAGE_KEY));
+    } catch {}
+    if (query.has('missionId')) {
+      missionWorkspace.syncWithExternalParams({ missionId: query.get('missionId') });
+      const activePt = missionWorkspace.getActivePoint();
+      applyPointCoordsToInputs(activePt);
+      applyMissionDatesToInputs(missionWorkspace.getActiveMission());
+    } else if (hasStoredMissions) {
+      const activeMission = missionWorkspace.getActiveMission();
+      const activePt = missionWorkspace.getActivePoint();
+      applyPointCoordsToInputs(activePt);
+      applyMissionDatesToInputs(activeMission);
+    }
+    missionWorkspace.syncWithExternalParams({
+      missionId: query.get('missionId') || missionWorkspace.getActiveMission()?.id,
+      lat: readCoordSafe('lat'),
+      lon: readCoordSafe('lon'),
+    });
+  }
+
   globalDem = await loadPackedDem('./global-dem.bin', GLOBAL_WIDTH, GLOBAL_HEIGHT);
   await calculate();
 } catch (error) {

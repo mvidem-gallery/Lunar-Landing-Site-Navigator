@@ -24,6 +24,7 @@ const STATIC_CLIENT_FILES = [
   'index.html',
   'style.css',
   'app.js',
+  'missions.js',
   'dem.js',
   'imagery.js',
   'lander.js',

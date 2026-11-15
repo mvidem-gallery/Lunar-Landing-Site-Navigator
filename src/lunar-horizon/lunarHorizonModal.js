@@ -114,6 +114,13 @@ export class LunarHorizonModal {
       darkLimit: String(darkLimit),
     });
 
+    if (targetData.missionId) {
+      params.set('missionId', String(targetData.missionId));
+    }
+    if (targetData.pointName) {
+      params.set('pointName', String(targetData.pointName));
+    }
+
     return `/lunar-horizon/index.html?${params.toString()}`;
   }
 
@@ -126,6 +133,12 @@ export class LunarHorizonModal {
     this.coordsEl.textContent = formatCoordsLabel(lat, lon);
 
     const metaParts = [];
+    if (targetData.missionName) {
+      metaParts.push(String(targetData.missionName));
+    }
+    if (targetData.pointName) {
+      metaParts.push(String(targetData.pointName));
+    }
     if (typeof targetData.sunElevDeg === 'number') {
       const sign = targetData.sunElevDeg >= 0 ? '+' : '';
       metaParts.push(`Sun: ${sign}${targetData.sunElevDeg.toFixed(1)}°`);
