@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LWP // Mission & Trajectory Analyzer</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="mission-ui">
+    <!-- Left icon rail -->
+    <aside class="icon-rail" aria-label="Navigation">
+      <button class="rail-btn active" data-tab="missions" title="1. Missions Summary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+      </button>
+      <button class="rail-btn" data-tab="variants" title="2. Timeline & Variants">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 21s7-5.5 7-11a7 7 0 1 0-14 0c0 5.5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>
+      </button>
+    </aside>
+
+    <!-- Left mission inspector sidebar -->
+    <aside class="mission-sidebar" id="details-drawer">
+      <div class="sidebar-top">
+        <span class="sidebar-title">SELECTED MISSION</span>
+        <div class="panel-box-tags">
+          <span class="tag-box blue-tag" id="active-mission-num">#—</span>
+          <span id="active-mission-badge" class="status-pill">EMPTY</span>
+        </div>
+      </div>
+
+      <div class="sidebar-subbar">
+        <span class="subbar-count" id="sidebar-missions-count">MISSIONS: 0</span>
+        <div class="subbar-actions">
+          <button class="mini-icon-btn" id="btn-clear-all" type="button" title="Clear all missions">✕</button>
+        </div>
+      </div>
+
+      <!-- Primary actions -->
+      <div class="sidebar-actions-grid">
+        <label class="cmd-btn cmd-btn-blue" for="file-input">+ LOAD JSON</label>
+        <input id="file-input" type="file" accept=".json,application/json" multiple hidden />
+        <button id="btn-help" class="cmd-btn" type="button">? HELP</button>
+        <button id="btn-export-top" class="cmd-btn" type="button" title="Download current table as CSV">EXPORT CSV</button>
+        <button id="btn-export-json" class="cmd-btn" type="button" title="Download clean summary report as JSON">SUMMARY JSON</button>
+      </div>
+
+      <!-- Status preset filter -->
+      <div class="segmented-bar" id="sidebar-mode-bar" title="Quick filter by calculation outcome">
+        <button class="seg-btn active" data-filter-preset="all">ALL (<span id="count-all">0</span>)</button>
+        <button class="seg-btn" data-filter-preset="ok">OK (<span id="count-ok">0</span>)</button>
+        <button class="seg-btn" data-filter-preset="fail">FAIL (<span id="count-fail">0</span>)</button>
+      </div>
+
+      <!-- Loaded missions switcher -->
+      <div id="mission-switcher" class="mission-switcher" role="listbox" aria-label="Loaded missions"></div>
+
+      <!-- Card 1: Landing Target -->
+      <div class="panel-box">
+        <div class="panel-box-header">
+          <span>LANDING TARGET</span>
+          <div class="panel-box-tags">
+            <span class="tag-box" id="detail-orbit-pass" title="Lunar orbit pass before descent">PASS —</span>
+          </div>
+        </div>
+        <div class="panel-box-body">
+          <div class="target-coords" id="detail-coords">—</div>
+          <div class="target-sub green-text" id="detail-spaceport">—</div>
+          <div class="target-meta" id="detail-sun-earth" title="Sun and Earth elevation at touchdown">Sun: — · Earth: —</div>
+          <div class="btn-row">
+            <button class="cmd-btn" id="btn-jump-timeline" type="button" title="Open flight timeline">TIMELINE</button>
+            <button class="cmd-btn" id="btn-jump-economy" type="button" title="Open launch date options">DATES</button>
+            <button class="cmd-btn cmd-btn-green" id="btn-jump-spaceports" type="button" title="Open spaceports comparison">SPACEPORTS</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Dates & Delta-V -->
+      <div class="panel-box">
+        <div class="panel-box-header">
+          <span>SCHEDULE &amp; DELTA-V</span>
+          <span class="tag-box">TRAJECTORY</span>
+        </div>
+        <div class="panel-box-body">
+          <div class="field-row">
+            <span class="field-label">LUNAR TOUCHDOWN (UTC)</span>
+          </div>
+          <div class="field-box" id="detail-touchdown-box">—</div>
+
+          <div class="field-row" style="margin-top: 8px;">
+            <span class="field-label">EARTH LAUNCH (UTC)</span>
+          </div>
+          <div class="field-box" id="detail-launch-box">—</div>
+
+          <div class="field-row" style="margin-top: 8px;">
+            <span class="field-label">TRANSIT TIME</span>
+            <span class="blue-text" id="detail-tof-str">—</span>
+          </div>
+          <div class="field-box-split">
+            <span id="detail-tof-hours">—</span>
+            <span class="muted">HRS</span>
+          </div>
+
+          <div class="field-row" style="margin-top: 8px;">
+            <span class="field-label" title="Total mission velocity budget">TOTAL MISSION ΔV</span>
+            <span class="green-text" id="detail-dv-split">—</span>
+          </div>
+          <div class="field-box-split">
+            <span id="detail-dv-total">—</span>
+            <span class="muted">M/S</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="status-banner" class="status-banner" hidden></div>
+    </aside>
+
+    <!-- Main right viewport -->
+    <main class="main-viewport">
+      <!-- Top header bar -->
+      <header class="viewport-header">
+        <div class="vh-left">
+          <span class="vh-brand">LWP // MISSION ANALYZER</span>
+          <span class="vh-sep">·</span>
+          <span class="vh-mission" id="vh-mission-label">■ NO MISSION</span>
+        </div>
+      </header>
+
+      <!-- Main view tabs -->
+      <div class="viewport-controls">
+        <div class="view-tabs" role="tablist">
+          <button class="view-tab tab active" role="tab" aria-selected="true" data-tab="missions">
+            1. MISSIONS SUMMARY (<span id="badge-missions">0</span>)
+          </button>
+          <button class="view-tab tab" role="tab" aria-selected="false" data-tab="variants">
+            2. TIMELINE &amp; VARIANTS (<span id="badge-variants">0</span>)
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab panels -->
+      <div class="viewport-body">
+        <!-- Tab 1: Missions Summary -->
+        <section id="panel-missions" class="tab-panel active" role="tabpanel">
+          <div class="toolbar">
+            <div class="search-box">
+              <input id="missions-search" type="search" placeholder="Search by file, spaceport, rocket, coordinates, status..." />
+            </div>
+            <div class="filters">
+              <select id="filter-status" class="select">
+                <option value="">All statuses</option>
+              </select>
+              <select id="filter-mode" class="select">
+                <option value="">All modes</option>
+              </select>
+              <select id="filter-spaceport" class="select">
+                <option value="">All spaceports</option>
+              </select>
+              <select id="filter-rocket" class="select">
+                <option value="">All rockets</option>
+              </select>
+              <button id="btn-reset-filters" class="cmd-btn" type="button" title="Reset search and filters">RESET</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table id="missions-table" class="datatable">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="missions-empty" class="empty-state" hidden>
+            No missions loaded. Drop <code>flight-*.json</code> anywhere on this window or click "+ LOAD JSON".
+          </div>
+          <div id="mission-summary-cards" class="summary-cards-grid"></div>
+        </section>
+
+        <!-- Tab 2: Timeline & Variants -->
+        <section id="panel-variants" class="tab-panel" role="tabpanel" hidden>
+          <div class="toolbar">
+            <div class="subtabs" role="tablist">
+              <button class="subtab active" data-subtab="timeline">FLIGHT TIMELINE</button>
+              <button class="subtab" data-subtab="economy">DATE OPTIONS</button>
+              <button class="subtab" data-subtab="spaceports">SPACEPORTS COMPARED</button>
+            </div>
+            <div class="search-box">
+              <input id="variants-search" type="search" placeholder="Filter by event, date, spaceport, or reason..." />
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table id="variants-table" class="datatable">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="variants-empty" class="empty-state" hidden>No data available in this section for the selected mission.</div>
+        </section>
+
+        <!-- Hidden debug calculation log panel (opened via ? HELP) -->
+        <section id="panel-log" class="tab-panel" role="tabpanel" hidden>
+          <div class="toolbar">
+            <button id="btn-back-from-log" class="cmd-btn" type="button">← BACK TO SUMMARY</button>
+            <div class="search-box">
+              <input id="log-search" type="search" placeholder="Search by seq, event, or JSON data (click a row to expand)..." />
+            </div>
+            <div class="filters">
+              <select id="log-event-filter" class="select">
+                <option value="">All events</option>
+              </select>
+              <select id="log-page-size" class="select">
+                <option value="50">50 / page</option>
+                <option value="100" selected>100 / page</option>
+                <option value="250">250 / page</option>
+                <option value="500">500 / page</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table id="log-table" class="datatable">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="pagination" id="log-pagination"></div>
+          <div id="log-empty" class="empty-state" hidden>No log entries found.</div>
+        </section>
+      </div>
+
+      <!-- Bottom telemetry bar -->
+      <footer id="kpi-strip" class="telemetry-bar" aria-label="Summary metrics"></footer>
+    </main>
+  </div>
+
+  <!-- Full-window drag & drop overlay -->
+  <div id="global-drop-overlay" class="global-drop-overlay" hidden>
+    <div class="global-drop-box">
+      DROP <code>flight-*.json</code> TO INGEST INTO DATATABLE
+    </div>
+  </div>
+
+  <!-- Help modal -->
+  <div id="help-modal" class="modal-backdrop" hidden>
+    <div class="modal-box">
+      <div class="modal-header">
+        <span>INTERFACE &amp; TERMINOLOGY HELP</span>
+        <button id="btn-close-help" class="mini-icon-btn" type="button">✕</button>
+      </div>
+      <div class="modal-body">
+        <p><strong>Loading logs:</strong> drag and drop one or more <code>flight-*.json</code> files anywhere onto this window or click <strong>+ LOAD JSON</strong>. Missions are saved locally in your browser, compared automatically, and best values are highlighted with <span class="best-tag">MIN</span>.</p>
+        <ul>
+          <li><strong>Δv (m/s)</strong> — total velocity change (propellant budget) for transfer, orbit insertion, and landing. Lower is more efficient.</li>
+          <li><strong>TLI</strong> — Trans-Lunar Injection burn from Earth parking orbit toward the Moon.</li>
+          <li><strong>LOI</strong> — Lunar Orbit Insertion burn upon arrival at the Moon.</li>
+          <li><strong>Transit Time (hrs)</strong> — Earth-to-Moon transfer duration.</li>
+          <li><strong>Timeline &amp; Variants</strong> — detailed mission stages, neighboring arrival dates (<code>economy.days</code>), and spaceports comparison.</li>
+        </ul>
+        <div class="btn-row" style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
+          <button id="btn-open-debug-log" class="cmd-btn" type="button">OPEN DEBUG LOG (<span id="badge-log-debug">0</span>)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./js/parser.js"></script>
+  <script src="./js/store.js"></script>
+  <script src="./js/datatable.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>

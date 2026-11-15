@@ -1,0 +1,240 @@
+.db-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  background: #040507;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: scale(1.014);
+  transition:
+    opacity 0.24s ease,
+    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0.24s ease;
+}
+
+.db-modal-backdrop.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.db-modal-topbar {
+  height: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  background: #080a0d;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  user-select: none;
+}
+
+.db-modal-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.db-modal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 2px;
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.38);
+  color: #e0f2fe;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.db-modal-mission {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #f4f7fa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-modal-meta {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 10.5px;
+  color: #94a0b0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.db-modal-btn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #94a0b0;
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 11px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.db-modal-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.32);
+  color: #ffffff;
+}
+
+.db-modal-btn-primary {
+  border-color: #f4f7fa;
+  background: #f4f7fa;
+  color: #05070a;
+}
+
+.db-modal-btn-primary:hover {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #000000;
+}
+
+.db-modal-frame-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: #07090d;
+}
+
+.db-modal-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #07090d;
+  opacity: 1;
+  transition: opacity 0.28s ease;
+}
+
+.db-modal-backdrop.is-loading .db-modal-iframe {
+  opacity: 0;
+}
+
+.db-modal-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(56, 189, 248, 0.12) 0%, rgba(5, 8, 13, 0.95) 55%, #030508 100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.26s ease;
+}
+
+.db-modal-backdrop.is-loading .db-modal-loader {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.db-loader-card {
+  width: min(420px, 100%);
+  padding: 22px 24px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 2px;
+  background: rgba(8, 12, 18, 0.9);
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 20px 48px rgba(0, 0, 0, 0.78),
+    0 0 28px rgba(56, 189, 248, 0.14);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+}
+
+.db-loader-kicker {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #38bdf8;
+  text-transform: uppercase;
+}
+
+.db-loader-title {
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #f4f7fa;
+  text-transform: uppercase;
+}
+
+.db-loader-bar-track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.db-loader-bar-fill {
+  position: absolute;
+  top: 0;
+  left: -42%;
+  width: 42%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent 0%, #0ea5e9 35%, #7dd3fc 75%, #ffffff 100%);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
+  animation: db-loader-sweep 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.db-loader-status {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: #94a0b0;
+  min-height: 14px;
+}
+
+@keyframes db-loader-sweep {
+  0% { left: -42%; }
+  100% { left: 100%; }
+}
+
+@media (max-width: 780px) {
+  .db-modal-meta {
+    display: none;
+  }
+}
