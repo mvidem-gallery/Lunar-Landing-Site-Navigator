@@ -1001,7 +1001,7 @@ export class LandingSitesMenu {
       const worldRadius = (pxRadius / height) * worldHeight;
       pin.mesh.scale.set(worldRadius, worldRadius, 1);
 
-      if (pin.normal.dot(this._camDir) < horizonCos - 0.002) {
+      if (distToMarker < 0.0003 || pin.normal.dot(this._camDir) < horizonCos - 0.002) {
         pin.labelEl.style.display = 'none';
         continue;
       }

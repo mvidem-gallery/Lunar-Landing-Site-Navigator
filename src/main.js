@@ -24,6 +24,32 @@ import { MAP_LAYERS, TRAJECTORY_CONFIG, VIEW_MODES } from './config/constants.js
 
 async function bootstrap() {
   const statusEl = document.getElementById('solar-status');
+  const bootLoaderEl = document.getElementById('app-boot-loader');
+  const bootProgressFillEl = document.getElementById('boot-loader-progress-fill');
+  const bootPctEl = document.getElementById('boot-loader-pct');
+  const bootStatusEl = document.getElementById('boot-loader-status');
+  const bootStartedAtMs = performance.now();
+  let maxBootPct = 12;
+  let bootDismissed = false;
+
+  function setBootProgress(pct, text = null) {
+    const clamped = Math.max(maxBootPct, Math.min(100, Math.round(pct)));
+    maxBootPct = clamped;
+    if (bootProgressFillEl) bootProgressFillEl.style.width = `${clamped}%`;
+    if (bootPctEl) bootPctEl.textContent = `${clamped}%`;
+    if (text && bootStatusEl) bootStatusEl.textContent = text;
+  }
+
+  function dismissBootLoader() {
+    if (bootDismissed || !bootLoaderEl) return;
+    bootDismissed = true;
+    setBootProgress(100, 'SYSTEM READY');
+    bootLoaderEl.classList.add('is-hidden');
+    setTimeout(() => {
+      bootLoaderEl.remove();
+    }, 480);
+  }
+
   try {
     const container = document.getElementById('canvas-container');
     const sceneManager = new SceneManager(container);
@@ -32,6 +58,7 @@ async function bootstrap() {
     celestialEnv.setTrajectoryPlaying(false);
     const uiController = new UIController();
 
+    setBootProgress(18, 'LOADING LUNAR GEOMETRY & STARFIELD...');
     const fontsReady =
       document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
 
@@ -42,6 +69,7 @@ async function bootstrap() {
     ]);
     sceneManager.scene.add(moonGroup);
     celestialEnv.setMoonGroup(moonGroup);
+    setBootProgress(42, 'INITIALIZING TELEMETRY & MISSION HUD...');
 
     const { baseMesh, uniforms, lodManager } = moonGroup.userData || {};
     const overlayManager = new VisualOverlayManager(uniforms, lightingSystem, moonGroup);
@@ -210,21 +238,53 @@ async function bootstrap() {
       const normalized =
         mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
           ? VIEW_MODES.CISLUNAR
-          : VIEW_MODES.LUNAR;
+          : mode === VIEW_MODES.POINT || mode === 'POINT_VIEW'
+            ? VIEW_MODES.POINT
+            : VIEW_MODES.LUNAR;
+
+      let effectiveOptions = options;
+      if (normalized === VIEW_MODES.POINT && !options.point) {
+        const target = resolveDefaultPointTarget();
+        effectiveOptions = {
+          ...options,
+          point: {
+            latDeg: target.lat,
+            lonDeg: target.lon,
+            label: target.label,
+            initialLookDir: computePointInitialLookDir(target.lat, target.lon),
+          },
+        };
+      }
+
       if (prevMode !== normalized && !options.silentTransition) {
         const activeMission = missionPanel?.getActiveMission();
         const missionLabel = activeMission?.name ? `Mission: ${activeMission.name}` : null;
+        const fromLabel =
+          prevMode === VIEW_MODES.CISLUNAR
+            ? 'TRAJECTORY'
+            : prevMode === VIEW_MODES.POINT
+              ? 'POINT VIEW'
+              : '3D MOON';
         if (normalized === VIEW_MODES.CISLUNAR) {
           uiController.showModeTransition({
-            fromLabel: '3D MOON',
+            fromLabel,
             toLabel: 'TRAJECTORY',
             title: 'LOADING CISLUNAR TRAJECTORY VIEW',
             subtitle: missionLabel || 'Aligning Earth–Moon orbital transfer frame...',
             durationMs: 1000,
           });
+        } else if (normalized === VIEW_MODES.POINT) {
+          const ptLabel = effectiveOptions.point?.label || 'Lunar Point';
+          uiController.showModeTransition({
+            fromLabel,
+            toLabel: 'POINT VIEW',
+            title: 'ENTERING LUNAR POINT VIEW',
+            subtitle: `${ptLabel} — First-person horizon & celestial sky`,
+            durationMs: 650,
+          });
         } else {
           uiController.showModeTransition({
-            fromLabel: 'TRAJECTORY',
+            fromLabel,
             toLabel: '3D MOON',
             title: 'LOADING 3D LUNAR GLOBE',
             subtitle: missionLabel || 'Focusing high-resolution lunar terrain & illumination...',
@@ -242,8 +302,11 @@ async function bootstrap() {
       }
       sceneManager.setCislunarDistance(celestialEnv.getActiveCislunarDistance());
       sceneManager.setCislunarFigure(celestialEnv.getCislunarFigure(), { animate: false });
-      sceneManager.setViewMode(normalized, options);
+      sceneManager.setViewMode(normalized, effectiveOptions);
       uiController.setViewModeUI(normalized);
+      if (normalized === VIEW_MODES.POINT) {
+        uiController.updatePointViewHUD(sceneManager.getPointViewState());
+      }
       missionPanel?.refreshViewState();
     }
 
@@ -260,8 +323,42 @@ async function bootstrap() {
       missionPanel?.refreshViewState();
     });
 
+    sceneManager.onPointViewChange((pvState) => {
+      if (pvState) {
+        uiController.updatePointViewHUD(pvState);
+      }
+    });
+
     uiController.onViewModeChange((mode) => {
       setViewMode(mode);
+    });
+
+    uiController.onPointViewAction((action) => {
+      switch (action) {
+        case 'north':
+          sceneManager.lookInPointView('NORTH');
+          break;
+        case 'earth':
+          sceneManager.lookInPointView(currentEarthDir);
+          break;
+        case 'sun':
+          sceneManager.lookInPointView(currentSunDir);
+          break;
+        case 'pick':
+          moonCoordPicker?.startPicking({
+            targetKey: 'point-view-pick',
+            label: 'Click Moon point to jump Point View',
+            onPick: ({ lat, lon }) => {
+              enterPointViewAt({ lat, lon, label: 'Picked Point' });
+            },
+          });
+          break;
+        case 'exit':
+          setViewMode(VIEW_MODES.LUNAR);
+          break;
+        default:
+          break;
+      }
     });
 
     uiController.onCislunarFocusChange((focus) => {
@@ -281,7 +378,11 @@ async function bootstrap() {
     if (!window.SurfaceRendererBridge) {
       window.SurfaceRendererBridge = lunarHorizonModal;
     }
+    lunarHorizonModal.onOpen(() => {
+      uiController.setSurfaceModalActiveUI(true);
+    });
     lunarHorizonModal.onClose((targetData) => {
+      uiController.setSurfaceModalActiveUI(false);
       const place = targetData?.pointName || targetData?.missionName || 'Landing Point';
       uiController.showModeTransition({
         fromLabel: 'SURFACE',
@@ -289,6 +390,28 @@ async function bootstrap() {
         title: 'RETURNING TO 3D LUNAR GLOBE',
         subtitle: `Detaching surface view (${place})`,
         durationMs: 550,
+      });
+    });
+
+    uiController.onSurfaceModeClick(() => {
+      if (lunarHorizonModal.isOpen) {
+        lunarHorizonModal.close();
+        return;
+      }
+      const active = missionPanel?.getActiveMission?.();
+      const target = resolveDefaultPointTarget();
+      const targetDate =
+        active?.flight?.landingDateIso && Number.isFinite(Date.parse(active.flight.landingDateIso))
+          ? new Date(active.flight.landingDateIso)
+          : currentSimulationDate;
+      lunarHorizonModal.open({
+        missionId: active?.id,
+        missionName: active?.name,
+        pointName: target.label,
+        lat: target.lat,
+        lon: target.lon,
+        date: new Date(targetDate.getTime()),
+        isoDate: targetDate.toISOString(),
       });
     });
 
@@ -303,6 +426,73 @@ async function bootstrap() {
 
     let missionPanel = null;
     let aiReportPanel = null;
+    const tmpPointUp = new THREE.Vector3();
+
+    function resolveDefaultPointTarget() {
+      const active = missionPanel?.getActiveMission?.();
+      if (
+        active?.landingSite &&
+        Number.isFinite(Number(active.landingSite.lat)) &&
+        Number.isFinite(Number(active.landingSite.lon))
+      ) {
+        return {
+          lat: Number(active.landingSite.lat),
+          lon: Number(active.landingSite.lon),
+          label: active.landingSite.name || active.name || 'Landing Site',
+        };
+      }
+      if (latestHoverData && Number.isFinite(latestHoverData.lat) && Number.isFinite(latestHoverData.lon)) {
+        return {
+          lat: latestHoverData.lat,
+          lon: latestHoverData.lon,
+          label: 'Cursor Point',
+        };
+      }
+      if (sceneManager.viewMode !== VIEW_MODES.CISLUNAR && sceneManager.camera.position.lengthSq() > 1e-6) {
+        const camNormal = sceneManager.camera.position.clone().normalize();
+        const { lat, lon } = MissionPanel.normalToLatLon(camNormal);
+        return {
+          lat,
+          lon,
+          label: 'Sub-Camera Point',
+        };
+      }
+      return { lat: 0, lon: 0, label: 'Lunar Origin' };
+    }
+
+    function computePointInitialLookDir(latDeg, lonDeg) {
+      const latRad = THREE.MathUtils.degToRad(latDeg);
+      const lonRad = THREE.MathUtils.degToRad(lonDeg);
+      tmpPointUp
+        .set(
+          Math.cos(latRad) * Math.cos(lonRad),
+          Math.sin(latRad),
+          -Math.cos(latRad) * Math.sin(lonRad)
+        )
+        .normalize();
+      const minHorizonDot = Math.sin(THREE.MathUtils.degToRad(-12));
+      if (currentEarthDir.dot(tmpPointUp) > minHorizonDot) {
+        return currentEarthDir;
+      }
+      if (currentSunDir.dot(tmpPointUp) > minHorizonDot) {
+        return currentSunDir;
+      }
+      return null;
+    }
+
+    function enterPointViewAt({ lat, lon, label = null } = {}) {
+      const nLat = Number.isFinite(Number(lat)) ? Number(lat) : 0;
+      const nLon = Number.isFinite(Number(lon)) ? Number(lon) : 0;
+      setViewMode(VIEW_MODES.POINT, {
+        point: {
+          latDeg: nLat,
+          lonDeg: nLon,
+          label,
+          initialLookDir: computePointInitialLookDir(nLat, nLon),
+        },
+      });
+    }
+
     let missionTrajectoryLoadSeq = 0;
     let currentLoadedTrajectoryKey = null;
 
@@ -811,6 +1001,14 @@ async function bootstrap() {
       onSaveLandingSite: (targetData) => {
         landingSitesMenu.promptAndSaveTarget(targetData);
       },
+      onPointView: (targetData) => {
+        if (!targetData) return;
+        enterPointViewAt({
+          lat: targetData.lat,
+          lon: targetData.lon,
+          label: 'Selected Point',
+        });
+      },
       onLandTo: (targetData) => {
         if (sceneManager.viewMode === VIEW_MODES.CISLUNAR) return;
         const activeMission = missionPanel?.getActiveMission();
@@ -935,7 +1133,7 @@ async function bootstrap() {
       landingSitesMenu.update(camera);
       missionPanel.update(camera);
       raycastController.update();
-      uiController.updateCompass(camera, currentSunDir);
+      uiController.updateCompass(camera, currentSunDir, sceneManager.getPointViewState());
 
       const altitudeUnits = Math.max(0.00002, camera.position.distanceTo(moonGroup.position) - 1.0);
       overlayManager.updateAdaptiveGrid(altitudeUnits);
@@ -951,9 +1149,30 @@ async function bootstrap() {
       });
     });
 
-    await commitSimulationTime(currentSimulationDate);
+    setBootProgress(52, 'STREAMING LUNAR SURFACE TILES...');
+    const tilesPromise = lodManager
+      ? lodManager.waitForInitialTiles({
+          minRatio: 0.85,
+          timeoutMs: 4200,
+          onProgress: ({ ratio }) => {
+            setBootProgress(52 + ratio * 30, 'STREAMING LUNAR SURFACE TILES...');
+          },
+        })
+      : Promise.resolve();
+
+    await Promise.allSettled([tilesPromise, commitSimulationTime(currentSimulationDate)]);
+    setBootProgress(96, 'SYNCHRONIZING SOLAR EPHEMERIS...');
+
+    const minDisplayMs = 1400;
+    const remainingMs = minDisplayMs - (performance.now() - bootStartedAtMs);
+    if (remainingMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remainingMs));
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    dismissBootLoader();
   } catch (err) {
     console.error('Failed to launch 3D scene:', err);
+    dismissBootLoader();
     if (statusEl) {
       statusEl.textContent = `Error: ${err.message}`;
       statusEl.style.color = '#ff6b6b';

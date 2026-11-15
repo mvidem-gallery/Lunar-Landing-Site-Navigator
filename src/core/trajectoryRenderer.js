@@ -14,6 +14,11 @@ const EVENT_DISPLAY_LABELS = {
   touchdown: 'TOUCHDOWN',
 };
 
+const _visCamPos = new THREE.Vector3();
+const _visCamFwd = new THREE.Vector3();
+const _visRayDir = new THREE.Vector3();
+const _visToOcc = new THREE.Vector3();
+
 function createGlowTexture(innerHex = '#ffffff', outerHex = '#34d399') {
   if (typeof document === 'undefined') return null;
   const canvas = document.createElement('canvas');
@@ -120,6 +125,11 @@ export class TrajectoryRenderer {
     this._spacecraftUp = new THREE.Vector3(0, 1, 0);
     this._tmpCamPos = new THREE.Vector3();
     this._tmpWorldPos = new THREE.Vector3();
+    this._tmpProjVec = new THREE.Vector3();
+
+    this._earthOccluder = { center: new THREE.Vector3(), radius: 0 };
+    this._moonOccluder = { center: new THREE.Vector3(), radius: 0 };
+    this._occluders = [];
 
     this._currentTimeSec = 0;
     this._isPlaying = true;
@@ -131,6 +141,74 @@ export class TrajectoryRenderer {
       typeof window !== 'undefined' ? window.innerWidth : 1280,
       typeof window !== 'undefined' ? window.innerHeight : 720
     );
+  }
+
+  static isPointVisibleInCamera(
+    worldPos,
+    camera,
+    occluders = [],
+    projVec = new THREE.Vector3()
+  ) {
+    if (!camera || !worldPos) return false;
+
+    camera.getWorldPosition(_visCamPos);
+    camera.getWorldDirection(_visCamFwd);
+
+    _visRayDir.copy(worldPos).sub(_visCamPos);
+    const dist = _visRayDir.length();
+    if (dist < 1e-6) return false;
+    _visRayDir.divideScalar(dist);
+
+    if (_visRayDir.dot(_visCamFwd) <= 0) {
+      return false;
+    }
+
+    projVec.copy(worldPos).project(camera);
+    if (
+      !Number.isFinite(projVec.x) ||
+      !Number.isFinite(projVec.y) ||
+      !Number.isFinite(projVec.z) ||
+      projVec.z < -1 ||
+      projVec.z > 1 ||
+      Math.abs(projVec.x) > 1.0 ||
+      Math.abs(projVec.y) > 1.0
+    ) {
+      return false;
+    }
+
+    for (let i = 0; i < occluders.length; i++) {
+      const occ = occluders[i];
+      if (!occ || !occ.center || !(occ.radius > 0)) continue;
+      const effR = occ.radius * 0.992;
+      _visToOcc.copy(_visCamPos).sub(occ.center);
+      const b = _visToOcc.dot(_visRayDir);
+      const c = _visToOcc.lengthSq() - effR * effR;
+      const disc = b * b - c;
+      if (disc <= 0) continue;
+      const sqrtDisc = Math.sqrt(disc);
+      const t1 = -b - sqrtDisc;
+      const t2 = -b + sqrtDisc;
+      const tHit = t1 > 0.0001 ? t1 : t2;
+      if (tHit > 0.0001 && tHit < dist - 0.005) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  setBodyOccluders(earthPos, earthRadius, moonPos, moonRadius) {
+    this._occluders.length = 0;
+    if (earthPos && earthRadius > 0) {
+      this._earthOccluder.center.copy(earthPos);
+      this._earthOccluder.radius = earthRadius;
+      this._occluders.push(this._earthOccluder);
+    }
+    if (moonPos && moonRadius > 0) {
+      this._moonOccluder.center.copy(moonPos);
+      this._moonOccluder.radius = moonRadius;
+      this._occluders.push(this._moonOccluder);
+    }
   }
 
   setVisible(visible) {
@@ -453,7 +531,7 @@ export class TrajectoryRenderer {
     }
     this._lastUpdatePerfMs = nowMs;
 
-    // Distance-adaptive sizing so markers & milestone labels stay readable across zoom levels
+    // Distance-adaptive sizing & FOV/occlusion visibility culling for milestone badges
     if (camera) {
       camera.getWorldPosition(this._tmpCamPos);
 
@@ -471,17 +549,28 @@ export class TrajectoryRenderer {
 
       for (const sprite of this._eventSprites) {
         const anchorPos = sprite.userData?.anchorPos;
-        if (anchorPos && sprite.userData?.outward) {
+        if (anchorPos) {
           this._tmpWorldPos.copy(anchorPos);
           this.group.localToWorld(this._tmpWorldPos);
-          const anchorCamDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);
-          const offset = THREE.MathUtils.clamp(
-            anchorCamDist * 0.022,
-            0.28,
-            0.55 * this._sceneScaleFactor
+          const isVisible = TrajectoryRenderer.isPointVisibleInCamera(
+            this._tmpWorldPos,
+            camera,
+            this._occluders,
+            this._tmpProjVec
           );
-          sprite.position.copy(anchorPos).addScaledVector(sprite.userData.outward, offset);
-          sprite.position.y += (sprite.userData.verticalSign || 0) * offset;
+          sprite.visible = isVisible;
+          if (!isVisible) continue;
+
+          if (sprite.userData?.outward) {
+            const anchorCamDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);
+            const offset = THREE.MathUtils.clamp(
+              anchorCamDist * 0.022,
+              0.28,
+              0.55 * this._sceneScaleFactor
+            );
+            sprite.position.copy(anchorPos).addScaledVector(sprite.userData.outward, offset);
+            sprite.position.y += (sprite.userData.verticalSign || 0) * offset;
+          }
         }
         sprite.getWorldPosition(this._tmpWorldPos);
         const camDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);

@@ -10,7 +10,7 @@ export class LightingSystem {
     this.sunLight = new THREE.DirectionalLight(0xffffff, 3.0);
     this.scene.add(this.sunLight);
 
-    this.earthshine = new THREE.AmbientLight(0x161d2e, 0.25);
+    this.earthshine = new THREE.AmbientLight(0x3e4c63, 0.56);
     this.scene.add(this.earthshine);
   }
 
@@ -25,8 +25,8 @@ export class LightingSystem {
 
     if (enabled) {
       this.sunLight.intensity = 3.0;
-      this.earthshine.color.setHex(0x161d2e);
-      this.earthshine.intensity = 0.25;
+      this.earthshine.color.setHex(0x3e4c63);
+      this.earthshine.intensity = 0.56;
     } else {
       this.sunLight.intensity = 0.0;
       this.earthshine.color.setHex(0xffffff);

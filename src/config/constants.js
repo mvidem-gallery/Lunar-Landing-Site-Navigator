@@ -36,6 +36,7 @@ export const EARTH_CONFIG = {
 export const VIEW_MODES = {
   LUNAR: 'LUNAR',
   CISLUNAR: 'CISLUNAR',
+  POINT: 'POINT',
 };
 
 export const TRAJECTORY_CONFIG = {

@@ -51,6 +51,12 @@ export class UIController {
     this.viewModeBtns = Array.from(document.querySelectorAll('[data-view-mode]'));
     this.bottomDock = document.getElementById('bottom-dock');
 
+    // Point View HUD
+    this.pointViewHud = document.getElementById('point-view-hud');
+    this.pointViewCoordsEl = document.getElementById('point-view-coords');
+    this.pointViewMetaEl = document.getElementById('point-view-meta');
+    this.pointViewActionBtns = Array.from(document.querySelectorAll('[data-pv-action]'));
+
     // Легенда кольорів фаз траєкторії у нижній панелі (Cislunar View)
     this.trajPhaseLegendEl = document.getElementById('traj-phase-legend');
 
@@ -128,6 +134,8 @@ export class UIController {
     this.homeCallback = null;
     this.flyToCallback = null;
     this.viewModeChangeCallback = null;
+    this.surfaceModeCallback = null;
+    this.pointViewActionCallback = null;
     this.cislunarFocusChangeCallback = null;
     this.searchProvider = null;
     this.topMissionClickCallback = null;
@@ -141,6 +149,8 @@ export class UIController {
     this.simpleTrajectoryToggleCallback = null;
     this._isTrajectoryPlaying = true;
     this._isSimpleTrajectory = true;
+    this._isSurfaceModalOpen = false;
+    this._currentViewMode = VIEW_MODES.LUNAR;
 
     this._isRightDrawerOpen = false;
     this._isLeftCollapsed = false;
@@ -163,9 +173,24 @@ export class UIController {
   _bindEvents() {
     this.viewModeBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        const mode = btn.dataset.viewMode === VIEW_MODES.CISLUNAR ? VIEW_MODES.CISLUNAR : VIEW_MODES.LUNAR;
-        this.setViewModeUI(mode);
+        const rawMode = btn.dataset.viewMode;
+        if (rawMode === 'SURFACE') {
+          this.surfaceModeCallback?.();
+          return;
+        }
+        const mode =
+          rawMode === VIEW_MODES.CISLUNAR
+            ? VIEW_MODES.CISLUNAR
+            : rawMode === VIEW_MODES.POINT
+              ? VIEW_MODES.POINT
+              : VIEW_MODES.LUNAR;
         this.viewModeChangeCallback?.(mode);
+      });
+    });
+
+    this.pointViewActionBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.pointViewActionCallback?.(btn.dataset.pvAction);
       });
     });
 
@@ -509,6 +534,7 @@ export class UIController {
     this.leftDock?.classList.toggle('collapsed', this._isLeftCollapsed);
     this.bottomDock?.classList.toggle('left-collapsed', this._isLeftCollapsed);
     this.topFloatingBar?.classList.toggle('left-collapsed', this._isLeftCollapsed);
+    document.body.classList.toggle('left-collapsed', this._isLeftCollapsed);
     document.body.classList.toggle(
       'ai-tab-active',
       this._activeLeftTab === 'ai' && !this._isLeftCollapsed
@@ -549,19 +575,66 @@ export class UIController {
     this.railDashboardBtn?.classList.toggle('active', Boolean(isOpen));
   }
 
+  setSurfaceModalActiveUI(isOpen) {
+    this._isSurfaceModalOpen = Boolean(isOpen);
+    this.viewModeBtns.forEach((btn) => {
+      if (btn.dataset.viewMode === 'SURFACE') {
+        btn.classList.toggle('surface-active', this._isSurfaceModalOpen);
+      }
+    });
+  }
+
+  onSurfaceModeClick(callback) {
+    this.surfaceModeCallback = callback;
+  }
+
+  onPointViewAction(callback) {
+    this.pointViewActionCallback = callback;
+  }
+
+  updatePointViewHUD(pvState) {
+    if (!pvState || !pvState.active) return;
+    if (this.pointViewCoordsEl) {
+      const latDir = pvState.latDeg >= 0 ? 'N' : 'S';
+      const lonDir = pvState.lonDeg >= 0 ? 'E' : 'W';
+      const coordStr = `${Math.abs(pvState.latDeg).toFixed(3)}°${latDir}, ${Math.abs(pvState.lonDeg).toFixed(3)}°${lonDir}`;
+      this.pointViewCoordsEl.textContent = pvState.label
+        ? `${pvState.label} (${coordStr})`
+        : coordStr;
+    }
+    if (this.pointViewMetaEl) {
+      const az = Math.round(pvState.azimuthDeg ?? 0);
+      const el = Math.round(pvState.elevationDeg ?? 0);
+      const elStr = el >= 0 ? `+${el}°` : `${el}°`;
+      const altM = Math.max(1, Math.round(pvState.altitudeMeters ?? 78));
+      const altStr = altM >= 1000 ? `${(altM / 1000).toFixed(2)} km` : `${altM} m`;
+      this.pointViewMetaEl.textContent = `AZ ${az}° · EL ${elStr} · ALT ${altStr}`;
+    }
+  }
+
   setViewModeUI(mode) {
     const activeMode =
       mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
         ? VIEW_MODES.CISLUNAR
-        : VIEW_MODES.LUNAR;
+        : mode === VIEW_MODES.POINT || mode === 'POINT_VIEW'
+          ? VIEW_MODES.POINT
+          : VIEW_MODES.LUNAR;
+    this._currentViewMode = activeMode;
     const isCislunar = activeMode === VIEW_MODES.CISLUNAR;
+    const isPoint = activeMode === VIEW_MODES.POINT;
     document.body.classList.toggle('cislunar-mode', isCislunar);
+    document.body.classList.toggle('point-view-mode', isPoint);
     if (this.simpleTrajectoryBtn) {
       this.simpleTrajectoryBtn.hidden = !isCislunar;
       this.simpleTrajectoryBtn.setAttribute('aria-hidden', isCislunar ? 'false' : 'true');
     }
     this.viewModeBtns.forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.viewMode === activeMode);
+      const btnMode = btn.dataset.viewMode;
+      if (btnMode === 'SURFACE') {
+        btn.classList.toggle('surface-active', this._isSurfaceModalOpen);
+      } else {
+        btn.classList.toggle('active', btnMode === activeMode);
+      }
     });
   }
 
@@ -790,8 +863,25 @@ export class UIController {
       .replace(/'/g, '&#39;');
   }
 
-  updateCompass(camera, sunDir) {
+  updateCompass(camera, sunDir, pointViewState = null) {
     if (!camera || !this.compassNeedleEl) return;
+
+    if (pointViewState && pointViewState.active) {
+      const azDeg = pointViewState.azimuthDeg || 0;
+      this.compassNeedleEl.style.transform = `rotate(${(-azDeg).toFixed(1)}deg)`;
+      if (sunDir && this.compassSunDotEl && pointViewState.east && pointViewState.north) {
+        const eSun = sunDir.dot(pointViewState.east);
+        const nSun = sunDir.dot(pointViewState.north);
+        const sunAzDeg = THREE.MathUtils.radToDeg(Math.atan2(eSun, nSun));
+        const relRad = THREE.MathUtils.degToRad(sunAzDeg - azDeg);
+        const r = 17;
+        const px = Math.sin(relRad) * r;
+        const py = -Math.cos(relRad) * r;
+        this.compassSunDotEl.style.transform = `translate(calc(-50% + ${px.toFixed(1)}px), calc(-50% + ${py.toFixed(1)}px))`;
+      }
+      return;
+    }
+
     camera.getWorldDirection(this._camFwd);
     this._camRight.crossVectors(this._camFwd, camera.up).normalize();
     this._camUp.crossVectors(this._camRight, this._camFwd).normalize();
@@ -800,9 +890,11 @@ export class UIController {
     const worldNorth = this._northTangent.set(0, 1, 0);
     const nx = worldNorth.dot(this._camRight);
     const ny = worldNorth.dot(this._camUp);
-    const angleRad = Math.atan2(nx, ny);
-    const angleDeg = THREE.MathUtils.radToDeg(angleRad);
-    this.compassNeedleEl.style.transform = `rotate(${angleDeg.toFixed(1)}deg)`;
+    if (Math.hypot(nx, ny) > 1e-4) {
+      const angleRad = Math.atan2(nx, ny);
+      const angleDeg = THREE.MathUtils.radToDeg(angleRad);
+      this.compassNeedleEl.style.transform = `rotate(${angleDeg.toFixed(1)}deg)`;
+    }
 
     if (sunDir && this.compassSunDotEl) {
       const sx = sunDir.dot(this._camRight);
@@ -850,7 +942,12 @@ export class UIController {
 
   updateCameraZoom({ zoomFactor, altitudeKm, kmPerPixel, estimatedLod }) {
     const formattedZoom = zoomFactor >= 10 ? `${zoomFactor.toFixed(1)}×` : `${zoomFactor.toFixed(2)}×`;
-    const formattedAlt = altitudeKm >= 100 ? `${Math.round(altitudeKm)} km` : `${altitudeKm.toFixed(1)} km`;
+    const formattedAlt =
+      altitudeKm < 1
+        ? `${Math.max(1, Math.round(altitudeKm * 1000))} m`
+        : altitudeKm >= 100
+          ? `${Math.round(altitudeKm)} km`
+          : `${altitudeKm.toFixed(1)} km`;
     const resolutionText = this._calculateTileResolutionMetersPerPixel(estimatedLod);
 
     if (this.cameraStatus) {

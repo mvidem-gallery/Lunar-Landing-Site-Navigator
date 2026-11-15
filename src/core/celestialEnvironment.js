@@ -763,6 +763,14 @@ export class CelestialEnvironment {
       this.sunBillboard.quaternion.copy(camera.quaternion);
     }
     if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      const earthPos = this.earthGroup?.visible ? this.earthGroup.position : null;
+      const moonPos = this.moonGroup ? this.moonGroup.position : null;
+      this.trajectoryRenderer.setBodyOccluders(
+        earthPos,
+        this.earthRadius,
+        moonPos,
+        MOON_CONFIG.RADIUS
+      );
       this.trajectoryRenderer.update(camera, elapsedSeconds);
     }
   }

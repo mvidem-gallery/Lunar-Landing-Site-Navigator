@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { MOON_CONFIG, EARTH_CONFIG, LOD_CONFIG, VIEW_MODES } from '../config/constants.js';
 
+function shortestAngleDeltaDeg(fromDeg, toDeg) {
+  return ((((toDeg - fromDeg) % 360) + 540) % 360) - 180;
+}
+
 export class SceneManager {
   constructor(container) {
     this.container = container;
@@ -46,6 +50,36 @@ export class SceneManager {
     this.maxLunarDistance = 7.0;
     this.maxLunarPanRadius = MOON_CONFIG.RADIUS * 1.4;
 
+    this.minPointAltitude = 0.000018;
+    this.defaultPointAltitude = 0.000045;
+    this.maxPointAltitude = 0.003;
+    this.pointViewState = {
+      active: false,
+      latDeg: 0,
+      lonDeg: 0,
+      label: null,
+      azimuthDeg: 0,
+      elevationDeg: 5,
+      targetAzimuthDeg: 0,
+      targetElevationDeg: 5,
+      altitudeUnits: this.defaultPointAltitude,
+      targetAltitudeUnits: this.defaultPointAltitude,
+    };
+    this._pointUp = new THREE.Vector3(1, 0, 0);
+    this._pointEast = new THREE.Vector3(0, 0, -1);
+    this._pointNorth = new THREE.Vector3(0, 1, 0);
+    this._pointEyePos = new THREE.Vector3();
+    this._pointHorizDir = new THREE.Vector3();
+    this._pointLookDir = new THREE.Vector3();
+    this._pointLookTarget = new THREE.Vector3();
+    this._pointDrag = {
+      active: false,
+      pointerId: null,
+      lastX: 0,
+      lastY: 0,
+      moved: false,
+    };
+
     this.cislunarDistance = EARTH_CONFIG.CISLUNAR_DISTANCE;
     this.cislunarEarthDir = new THREE.Vector3(1, 0, 0);
     this.cislunarTarget = new THREE.Vector3();
@@ -69,6 +103,7 @@ export class SceneManager {
     this.onUpdateCallback = null;
     this.onViewModeChangeCallback = null;
     this.onCislunarFocusChangeCallback = null;
+    this.onPointViewChangeCallback = null;
     this._flyAnim = null;
 
     this._tmpOffset = new THREE.Vector3();
@@ -77,11 +112,12 @@ export class SceneManager {
     this._tmpSystemCenter = new THREE.Vector3();
 
     this.setupSmoothAltitudeZoom();
+    this._bindPointViewEvents();
     this.renderer.domElement.addEventListener(
       'pointerdown',
       (event) => {
         this._flyAnim = null;
-        if (event.button === 0) {
+        if (event.button === 0 && this.viewMode !== VIEW_MODES.POINT) {
           this.controls.mouseButtons.LEFT = event.altKey ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
         }
       },
@@ -89,6 +125,10 @@ export class SceneManager {
     );
 
     const syncAltPanMode = (altPressed) => {
+      if (this.viewMode === VIEW_MODES.POINT) {
+        this.renderer.domElement.style.cursor = this._pointDrag.active ? 'grabbing' : 'grab';
+        return;
+      }
       this.controls.mouseButtons.LEFT = altPressed ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
       this.renderer.domElement.style.cursor = altPressed ? 'move' : '';
     };
@@ -105,6 +145,75 @@ export class SceneManager {
     });
     window.addEventListener('blur', () => syncAltPanMode(false));
     window.addEventListener('resize', this.onResize.bind(this));
+  }
+
+  static computePointBasis(
+    latDeg,
+    lonDeg,
+    outUp = new THREE.Vector3(),
+    outEast = new THREE.Vector3(),
+    outNorth = new THREE.Vector3()
+  ) {
+    const latRad = THREE.MathUtils.degToRad(latDeg);
+    const lonRad = THREE.MathUtils.degToRad(lonDeg);
+    outUp
+      .set(
+        Math.cos(latRad) * Math.cos(lonRad),
+        Math.sin(latRad),
+        -Math.cos(latRad) * Math.sin(lonRad)
+      )
+      .normalize();
+    outEast.set(-Math.sin(lonRad), 0, -Math.cos(lonRad)).normalize();
+    outNorth.crossVectors(outUp, outEast).normalize();
+    return { up: outUp, east: outEast, north: outNorth };
+  }
+
+  _bindPointViewEvents() {
+    const dom = this.renderer.domElement;
+
+    dom.addEventListener('pointerdown', (event) => {
+      if (this.viewMode !== VIEW_MODES.POINT) return;
+      if (event.button !== 0 && event.button !== 2) return;
+      this._pointDrag.active = true;
+      this._pointDrag.pointerId = event.pointerId;
+      this._pointDrag.lastX = event.clientX;
+      this._pointDrag.lastY = event.clientY;
+      this._pointDrag.moved = false;
+      dom.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('pointermove', (event) => {
+      if (this.viewMode !== VIEW_MODES.POINT || !this._pointDrag.active) return;
+      if (this._pointDrag.pointerId !== null && event.pointerId !== this._pointDrag.pointerId) return;
+      const dx = event.clientX - this._pointDrag.lastX;
+      const dy = event.clientY - this._pointDrag.lastY;
+      this._pointDrag.lastX = event.clientX;
+      this._pointDrag.lastY = event.clientY;
+      if (Math.hypot(dx, dy) > 0) {
+        this._pointDrag.moved = true;
+      }
+
+      const lookSensitivity = 0.22;
+      this.pointViewState.targetAzimuthDeg -= dx * lookSensitivity;
+      this.pointViewState.targetElevationDeg = THREE.MathUtils.clamp(
+        this.pointViewState.targetElevationDeg + dy * lookSensitivity,
+        -70,
+        85
+      );
+    });
+
+    const endDrag = (event) => {
+      if (!this._pointDrag.active) return;
+      if (this._pointDrag.pointerId !== null && event.pointerId !== this._pointDrag.pointerId) return;
+      this._pointDrag.active = false;
+      this._pointDrag.pointerId = null;
+      if (this.viewMode === VIEW_MODES.POINT) {
+        dom.style.cursor = 'grab';
+      }
+    };
+
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
   }
 
   _updateCislunarFraming() {
@@ -272,6 +381,28 @@ export class SceneManager {
     this.onCislunarFocusChangeCallback = callback;
   }
 
+  onPointViewChange(callback) {
+    this.onPointViewChangeCallback = callback;
+  }
+
+  getPointViewState() {
+    if (this.viewMode !== VIEW_MODES.POINT) return null;
+    const wrappedAz = ((this.pointViewState.azimuthDeg % 360) + 360) % 360;
+    return {
+      active: true,
+      latDeg: this.pointViewState.latDeg,
+      lonDeg: this.pointViewState.lonDeg,
+      label: this.pointViewState.label,
+      azimuthDeg: wrappedAz,
+      elevationDeg: this.pointViewState.elevationDeg,
+      altitudeUnits: this.pointViewState.altitudeUnits,
+      altitudeMeters: this.pointViewState.altitudeUnits * MOON_CONFIG.RADIUS_METERS,
+      up: this._pointUp,
+      east: this._pointEast,
+      north: this._pointNorth,
+    };
+  }
+
   getCislunarFocus() {
     return this.cislunarFocus;
   }
@@ -326,29 +457,177 @@ export class SceneManager {
   }
 
   _normalizeViewMode(mode) {
-    return mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
-      ? VIEW_MODES.CISLUNAR
-      : VIEW_MODES.LUNAR;
+    if (mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW') {
+      return VIEW_MODES.CISLUNAR;
+    }
+    if (mode === VIEW_MODES.POINT || mode === 'POINT_VIEW') {
+      return VIEW_MODES.POINT;
+    }
+    return VIEW_MODES.LUNAR;
   }
 
-  setViewMode(mode, { animate = true, focus = null } = {}) {
+  _saveCurrentLunarCamera() {
+    const distFromOrigin = this.camera.position.length();
+    const dir =
+      distFromOrigin > 0.0001
+        ? this.camera.position.clone().divideScalar(distFromOrigin)
+        : new THREE.Vector3(1, 0, 0);
+    this._savedLunarCamera = {
+      direction: dir,
+      distance: THREE.MathUtils.clamp(
+        this.targetRadialDistance,
+        this.minLunarDistance,
+        this.maxLunarDistance
+      ),
+    };
+  }
+
+  _applyPointViewCamera(damping = 0.22) {
+    const s = this.pointViewState;
+    const azDelta = shortestAngleDeltaDeg(s.azimuthDeg, s.targetAzimuthDeg);
+    s.azimuthDeg += azDelta * damping;
+    s.elevationDeg = THREE.MathUtils.lerp(s.elevationDeg, s.targetElevationDeg, damping);
+    s.altitudeUnits = THREE.MathUtils.lerp(s.altitudeUnits, s.targetAltitudeUnits, damping);
+
+    this._pointEyePos
+      .copy(this._pointUp)
+      .multiplyScalar(MOON_CONFIG.RADIUS + s.altitudeUnits);
+
+    const azRad = THREE.MathUtils.degToRad(s.azimuthDeg);
+    const elRad = THREE.MathUtils.degToRad(s.elevationDeg);
+
+    this._pointHorizDir
+      .copy(this._pointNorth)
+      .multiplyScalar(Math.cos(azRad))
+      .addScaledVector(this._pointEast, Math.sin(azRad))
+      .normalize();
+
+    this._pointLookDir
+      .copy(this._pointHorizDir)
+      .multiplyScalar(Math.cos(elRad))
+      .addScaledVector(this._pointUp, Math.sin(elRad))
+      .normalize();
+
+    this.camera.up.copy(this._pointUp);
+    this.camera.position.copy(this._pointEyePos);
+    this._pointLookTarget.copy(this._pointEyePos).add(this._pointLookDir);
+    this.camera.lookAt(this._pointLookTarget);
+  }
+
+  enterPointView({
+    latDeg = 0,
+    lonDeg = 0,
+    label = null,
+    initialLookDir = null,
+    altitudeUnits = null,
+  } = {}) {
+    if (this.viewMode === VIEW_MODES.LUNAR) {
+      this._saveCurrentLunarCamera();
+    }
+
+    this.viewMode = VIEW_MODES.POINT;
+    this._flyAnim = null;
+    this.controls.enabled = false;
+    this._pointDrag.active = false;
+    this.renderer.domElement.style.cursor = 'grab';
+
+    const clampedLat = THREE.MathUtils.clamp(Number(latDeg) || 0, -89.99, 89.99);
+    const clampedLon = Number.isFinite(Number(lonDeg)) ? Number(lonDeg) : 0;
+    SceneManager.computePointBasis(
+      clampedLat,
+      clampedLon,
+      this._pointUp,
+      this._pointEast,
+      this._pointNorth
+    );
+
+    let initAz = 0;
+    let initEl = 6;
+    if (initialLookDir && initialLookDir.lengthSq() > 1e-8) {
+      const dir = initialLookDir.clone().normalize();
+      const upComp = THREE.MathUtils.clamp(dir.dot(this._pointUp), -1, 1);
+      const rawEl = THREE.MathUtils.radToDeg(Math.asin(upComp));
+      if (rawEl > -12) {
+        initAz = THREE.MathUtils.radToDeg(
+          Math.atan2(dir.dot(this._pointEast), dir.dot(this._pointNorth))
+        );
+        initEl = THREE.MathUtils.clamp(rawEl, -8, 78);
+      }
+    }
+
+    const startAlt = THREE.MathUtils.clamp(
+      Number.isFinite(altitudeUnits) ? altitudeUnits : this.defaultPointAltitude,
+      this.minPointAltitude,
+      this.maxPointAltitude
+    );
+
+    this.pointViewState = {
+      active: true,
+      latDeg: clampedLat,
+      lonDeg: clampedLon,
+      label: label || null,
+      azimuthDeg: initAz,
+      elevationDeg: initEl,
+      targetAzimuthDeg: initAz,
+      targetElevationDeg: initEl,
+      altitudeUnits: startAlt,
+      targetAltitudeUnits: startAlt,
+    };
+
+    this._applyPointViewCamera(1.0);
+    this.onPointViewChangeCallback?.(this.getPointViewState());
+    return this.pointViewState;
+  }
+
+  lookInPointView(targetDirOrNorth, { elevationDeg = null, animate = true } = {}) {
+    if (this.viewMode !== VIEW_MODES.POINT) return;
+    let nextAz = 0;
+    let nextEl = elevationDeg ?? 6;
+    if (targetDirOrNorth && targetDirOrNorth !== 'NORTH' && targetDirOrNorth.lengthSq?.() > 1e-8) {
+      const dir = targetDirOrNorth.clone().normalize();
+      nextAz = THREE.MathUtils.radToDeg(
+        Math.atan2(dir.dot(this._pointEast), dir.dot(this._pointNorth))
+      );
+      const rawEl = THREE.MathUtils.radToDeg(
+        Math.asin(THREE.MathUtils.clamp(dir.dot(this._pointUp), -1, 1))
+      );
+      nextEl = THREE.MathUtils.clamp(elevationDeg ?? rawEl, -70, 85);
+    }
+
+    const delta = shortestAngleDeltaDeg(this.pointViewState.azimuthDeg, nextAz);
+    this.pointViewState.targetAzimuthDeg = this.pointViewState.azimuthDeg + delta;
+    this.pointViewState.targetElevationDeg = THREE.MathUtils.clamp(nextEl, -70, 85);
+    if (!animate) {
+      this._applyPointViewCamera(1.0);
+    }
+    this.onPointViewChangeCallback?.(this.getPointViewState());
+  }
+
+  setViewMode(mode, { animate = true, focus = null, point = null } = {}) {
     const nextMode = this._normalizeViewMode(mode);
     const prevMode = this.viewMode;
 
-    if (prevMode === VIEW_MODES.LUNAR && nextMode === VIEW_MODES.CISLUNAR) {
-      const distFromOrigin = this.camera.position.length();
-      const dir =
-        distFromOrigin > 0.0001
-          ? this.camera.position.clone().divideScalar(distFromOrigin)
-          : new THREE.Vector3(1, 0, 0);
-      this._savedLunarCamera = {
-        direction: dir,
-        distance: THREE.MathUtils.clamp(
-          this.targetRadialDistance,
-          this.minLunarDistance,
-          this.maxLunarDistance
-        ),
-      };
+    if (prevMode === VIEW_MODES.LUNAR && nextMode !== VIEW_MODES.LUNAR) {
+      this._saveCurrentLunarCamera();
+    }
+
+    if (nextMode === VIEW_MODES.POINT) {
+      this.enterPointView(point || {
+        latDeg: this.pointViewState.latDeg,
+        lonDeg: this.pointViewState.lonDeg,
+        label: this.pointViewState.label,
+      });
+      return this.viewMode;
+    }
+
+    if (prevMode === VIEW_MODES.POINT) {
+      this.pointViewState.active = false;
+      this._pointDrag.active = false;
+      this.controls.enabled = true;
+      this.camera.up.set(0, 1, 0);
+      this.renderer.domElement.style.cursor = '';
+      this.controls.target.set(0, 0, 0);
+      this.onPointViewChangeCallback?.(null);
     }
 
     this.viewMode = nextMode;
@@ -440,6 +719,16 @@ export class SceneManager {
         const delta = THREE.MathUtils.clamp(event.deltaY, -100, 100);
         const zoomSensitivity = 0.0014;
 
+        if (this.viewMode === VIEW_MODES.POINT) {
+          const factor = 1 + delta * 0.0018;
+          this.pointViewState.targetAltitudeUnits = THREE.MathUtils.clamp(
+            this.pointViewState.targetAltitudeUnits * factor,
+            this.minPointAltitude,
+            this.maxPointAltitude
+          );
+          return;
+        }
+
         let distanceDelta;
         if (this.viewMode === VIEW_MODES.CISLUNAR) {
           if (this.cislunarFocus === 'EARTH') {
@@ -480,11 +769,26 @@ export class SceneManager {
       this.setCislunarFocus(this.cislunarFocus, { animate: true });
       return;
     }
+    if (this.viewMode === VIEW_MODES.POINT) {
+      this.pointViewState.targetAzimuthDeg = 0;
+      this.pointViewState.targetElevationDeg = 6;
+      this.pointViewState.targetAltitudeUnits = this.defaultPointAltitude;
+      return;
+    }
     this.flyToCoordinates(0, 0, 1.0);
   }
 
   flyToCoordinates(latDeg, lonDeg, targetZoom = 65) {
     if (this.viewMode !== VIEW_MODES.LUNAR) {
+      if (this.viewMode === VIEW_MODES.POINT) {
+        this.pointViewState.active = false;
+        this._pointDrag.active = false;
+        this.controls.enabled = true;
+        this.camera.up.set(0, 1, 0);
+        this.renderer.domElement.style.cursor = '';
+        this.controls.target.set(0, 0, 0);
+        this.onPointViewChangeCallback?.(null);
+      }
       this.viewMode = VIEW_MODES.LUNAR;
       this.minRadialDistance = this.minLunarDistance;
       this.maxRadialDistance = this.maxLunarDistance;
@@ -586,7 +890,7 @@ export class SceneManager {
       if (dM > 1e-6 && dM < minMoonCamDist) {
         this.camera.position.copy(this._moonCenter).addScaledVector(this._tmpCollisionVec, minMoonCamDist / dM);
       }
-    } else {
+    } else if (this.viewMode === VIEW_MODES.LUNAR) {
       // Режим LUNAR: обмежуємо панорамування та орбітальне віддалення навколо Місяця
       const targetLen = this.controls.target.length();
       if (targetLen > this.maxLunarPanRadius && targetLen > 1e-6) {
@@ -604,6 +908,12 @@ export class SceneManager {
   }
 
   updateNavigationDynamics() {
+    if (this.viewMode === VIEW_MODES.POINT) {
+      this._applyPointViewCamera(0.22);
+      this.onPointViewChangeCallback?.(this.getPointViewState());
+      return;
+    }
+
     if (this._flyAnim) {
       const elapsed = performance.now() - this._flyAnim.startTime;
       const t = THREE.MathUtils.clamp(elapsed / this._flyAnim.durationMs, 0, 1);
@@ -658,7 +968,8 @@ export class SceneManager {
 
   getCameraTelemetry() {
     const currentDist = this.camera.position.distanceTo(this._moonCenter);
-    const altitude = Math.max(this.minSurfaceClearance, currentDist - MOON_CONFIG.RADIUS);
+    const minAlt = this.viewMode === VIEW_MODES.POINT ? this.minPointAltitude : this.minSurfaceClearance;
+    const altitude = Math.max(minAlt, currentDist - MOON_CONFIG.RADIUS);
 
     const zoomFactor = this.referenceAltitude / altitude;
     const altitudeKm = altitude * this.moonRadiusKm;
@@ -686,7 +997,9 @@ export class SceneManager {
     this.onUpdateCallback = onUpdate;
     const animate = () => {
       requestAnimationFrame(animate);
-      this.controls.update();
+      if (this.viewMode !== VIEW_MODES.POINT) {
+        this.controls.update();
+      }
       this.updateNavigationDynamics();
 
       if (this.onUpdateCallback) {

@@ -221,7 +221,9 @@ export class QuadtreeTileManager {
     this.viewMode =
       mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
         ? VIEW_MODES.CISLUNAR
-        : VIEW_MODES.LUNAR;
+        : mode === VIEW_MODES.POINT || mode === 'POINT_VIEW'
+          ? VIEW_MODES.POINT
+          : VIEW_MODES.LUNAR;
     return this.viewMode;
   }
 
@@ -230,6 +232,46 @@ export class QuadtreeTileManager {
       return true;
     }
     return Number.isFinite(camDist) && camDist > this._highLodMaxCameraDistance;
+  }
+
+  getInitialTilesStatus() {
+    let ready = 0;
+    let failed = 0;
+    let loading = 0;
+    const total = this.roots.length;
+    for (const root of this.roots) {
+      if (root.isReady) ready += 1;
+      else if (root.hasFailed) failed += 1;
+      else if (root.isLoading) loading += 1;
+    }
+    const settled = ready + failed;
+    const ratio = total > 0 ? settled / total : 1;
+    const pending = this.cache?.pendingCount ?? loading;
+    return { ready, failed, loading, settled, total, pending, ratio };
+  }
+
+  waitForInitialTiles({ minRatio = 0.85, timeoutMs = 4500, onProgress = null } = {}) {
+    const initial = this.getInitialTilesStatus();
+    if ((initial.ratio >= minRatio && initial.pending === 0) || initial.total === 0) {
+      onProgress?.(initial);
+      return Promise.resolve(initial);
+    }
+
+    const startMs = performance.now();
+    return new Promise((resolve) => {
+      const tick = () => {
+        const status = this.getInitialTilesStatus();
+        onProgress?.(status);
+        const elapsed = performance.now() - startMs;
+        const settledEnough = status.ratio >= minRatio && (status.pending === 0 || elapsed >= 1800);
+        if (settledEnough || elapsed >= timeoutMs) {
+          resolve(status);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
   }
 
   getColsCount(z) {

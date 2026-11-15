@@ -16,6 +16,7 @@ export class SurfaceContextMenu {
    * @param {Function} [options.onFocusBody]
    * @param {Function} [options.onCreateMission]
    * @param {Function} options.onLandTo
+   * @param {Function} [options.onPointView]
    * @param {Function} [options.onSaveLandingSite]
    * @param {Function} [options.onSetMissionTarget]
    * @param {Function} [options.onAddToMission]
@@ -33,6 +34,7 @@ export class SurfaceContextMenu {
       onFocusBody,
       onCreateMission,
       onLandTo,
+      onPointView,
       onSaveLandingSite,
       onSetMissionTarget,
       onAddToMission,
@@ -49,6 +51,7 @@ export class SurfaceContextMenu {
     this.onFocusBody = onFocusBody;
     this.onCreateMission = onCreateMission;
     this.onLandTo = onLandTo;
+    this.onPointView = onPointView;
     this.onSaveLandingSite = onSaveLandingSite;
     this.onSetMissionTarget = onSetMissionTarget;
     this.onAddToMission = onAddToMission;
@@ -116,6 +119,10 @@ export class SurfaceContextMenu {
         <span>Save Landing Site</span>
         <span class="lunar-context-menu-item-icon">SITE</span>
       </button>
+      <button type="button" class="lunar-context-menu-item" data-action="point-view">
+        <span>View from Point</span>
+        <span class="lunar-context-menu-item-icon">PT</span>
+      </button>
       <button type="button" class="lunar-context-menu-item" data-action="land-to">
         <span>Land to</span>
         <span class="lunar-context-menu-item-icon">SURF</span>
@@ -136,6 +143,7 @@ export class SurfaceContextMenu {
     this.setMissionTargetBtn = this.menuEl.querySelector('[data-action="set-mission-target"]');
     this.addToMissionBtn = this.menuEl.querySelector('[data-action="add-to-mission"]');
     this.saveSiteBtn = this.menuEl.querySelector('[data-action="save-landing-site"]');
+    this.pointViewBtn = this.menuEl.querySelector('[data-action="point-view"]');
     this.landBtn = this.menuEl.querySelector('[data-action="land-to"]');
 
     document.body.appendChild(this.menuEl);
@@ -230,6 +238,7 @@ export class SurfaceContextMenu {
           showFocusMoon: false,
           showFocusSystem: isCislunar,
           showLunarActions: false,
+          showPointView: false,
           showLandTo: false,
         };
         this.show(e.clientX, e.clientY, this.activeTarget);
@@ -248,7 +257,7 @@ export class SurfaceContextMenu {
           mode: hasCoords ? 'surface' : 'body',
           bodyType: 'MOON',
           headerLabel: hasCoords ? null : 'MOON · LUNA',
-          tagLabel: isCislunar ? 'CISLUNAR' : 'TARGET',
+          tagLabel: isCislunar ? 'CISLUNAR' : viewMode === VIEW_MODES.POINT ? 'POINT' : 'TARGET',
           lon: hasCoords ? Number(coords.lon.toFixed(5)) : null,
           lat: hasCoords ? Number(coords.lat.toFixed(5)) : null,
           date: new Date(currentDate.getTime()),
@@ -259,6 +268,7 @@ export class SurfaceContextMenu {
           showFocusMoon: isCislunar,
           showFocusSystem: isCislunar,
           showLunarActions: hasCoords,
+          showPointView: hasCoords,
           // Функція Land to недоступна у режимі перегляду траєкторії
           showLandTo: !isCislunar && hasCoords,
         };
@@ -310,6 +320,14 @@ export class SurfaceContextMenu {
       e.stopPropagation();
       if (this.activeTarget?.showLunarActions && typeof this.onAddToMission === 'function') {
         this.onAddToMission({ ...this.activeTarget });
+      }
+      this.hide();
+    });
+
+    this.pointViewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.activeTarget?.showPointView && typeof this.onPointView === 'function') {
+        this.onPointView({ ...this.activeTarget });
       }
       this.hide();
     });
@@ -421,6 +439,7 @@ export class SurfaceContextMenu {
     this.setMissionTargetBtn.style.display = target.showLunarActions ? 'flex' : 'none';
     this.addToMissionBtn.style.display = target.showLunarActions ? 'flex' : 'none';
     this.saveSiteBtn.style.display = target.showLunarActions ? 'flex' : 'none';
+    this.pointViewBtn.style.display = target.showPointView ? 'flex' : 'none';
     this.landBtn.style.display = target.showLandTo ? 'flex' : 'none';
 
     this.menuEl.classList.add('visible');

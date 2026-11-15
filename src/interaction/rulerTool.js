@@ -772,7 +772,13 @@ export class RulerTool {
   }
 
   _projectLabel(el, normal, camPos, camDist, horizonCos, rect, fovRad) {
-    if (normal.dot(this._camDir) < horizonCos - 0.002) {
+    const dx = camPos.x - normal.x * this.surfaceRadius;
+    const dy = camPos.y - normal.y * this.surfaceRadius;
+    const dz = camPos.z - normal.z * this.surfaceRadius;
+    if (
+      dx * dx + dy * dy + dz * dz < 0.0003 * 0.0003 ||
+      normal.dot(this._camDir) < horizonCos - 0.002
+    ) {
       el.style.display = 'none';
       return;
     }

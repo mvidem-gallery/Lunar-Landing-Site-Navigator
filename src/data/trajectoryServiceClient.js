@@ -1,6 +1,7 @@
 import { parseUtcStringToMs } from '../astronomy/trajectoryGenerator.js';
 
 let cachedCatalog = null;
+let cachedFiles = null;
 
 function buildApiError(message, code = 'internal', status = 500, details = null) {
   const err = new Error(message || 'Trajectory service error');
@@ -61,6 +62,16 @@ export async function fetchTrajectoryCatalog({ force = false, signal = null } = 
   const data = await requestJson('/api/trajectory/catalog', { method: 'GET', signal });
   cachedCatalog = data;
   return data;
+}
+
+export async function fetchTrajectoryFiles({ force = false, signal = null } = {}) {
+  if (!force && cachedFiles) {
+    return cachedFiles;
+  }
+  const data = await requestJson('/api/trajectory/files', { method: 'GET', signal });
+  const files = Array.isArray(data?.files) ? data.files : [];
+  cachedFiles = files;
+  return files;
 }
 
 export async function submitTrajectoryJob(payload, { signal = null } = {}) {

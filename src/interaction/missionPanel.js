@@ -23,10 +23,11 @@ import {
 } from '../data/missionModel.js';
 import { parseUtcStringToMs } from '../astronomy/trajectoryGenerator.js';
 import { NASA_MOON_EXPLORATION_SITES } from '../data/lunarLandingSites.js';
-import { deleteTrajectoryDoc, saveTrajectoryDoc } from '../data/trajectoryStorage.js';
+import { deleteTrajectoryDoc, loadTrajectoryDoc, saveTrajectoryDoc } from '../data/trajectoryStorage.js';
 import {
   extractScheduleFromGeneratedResult,
   fetchTrajectoryCatalog,
+  fetchTrajectoryFiles,
   generateMissionTrajectory,
 } from '../data/trajectoryServiceClient.js';
 import { RulerTool } from './rulerTool.js';
@@ -159,6 +160,8 @@ export class MissionPanel {
     this._createMissionAbort = null;
     this._trajCatalog = null;
     this._isCatalogLoading = false;
+    this._trajFiles = null;
+    this._isTrajFilesLoading = false;
     this._newMissionDraft = this._createEmptyNewMissionDraft();
     this._isTargetFormOpen = false;
     this._isAddPointFormOpen = false;
@@ -428,6 +431,39 @@ export class MissionPanel {
     }
   }
 
+  async _ensureTrajectoryFilesLoaded({ force = false } = {}) {
+    if ((!force && this._trajFiles) || this._isTrajFilesLoading) return;
+    this._isTrajFilesLoading = true;
+    try {
+      const files = await fetchTrajectoryFiles({ force });
+      this._trajFiles = Array.isArray(files) ? files : [];
+    } catch {
+      if (!this._trajFiles) {
+        this._trajFiles = [
+          {
+            fileName: 'trajectory-2026-11-15T121332Z.json',
+            url: TRAJECTORY_CONFIG.DEFAULT_URL,
+          },
+        ];
+      }
+    } finally {
+      this._isTrajFilesLoading = false;
+      if (this._panelView === 'detail' && this._detailTab === 'traj') {
+        this.render();
+      }
+    }
+  }
+
+  _deleteDocIdIfUnused(docId, excludeMissionId = null) {
+    if (!docId) return;
+    const stillUsed = this.missions.some(
+      (m) => m.id !== excludeMissionId && m.trajectory?.docId === docId
+    );
+    if (!stillUsed) {
+      deleteTrajectoryDoc(docId);
+    }
+  }
+
   openNewMissionForm({ lat = null, lon = null, landingDateIso = null, name = '' } = {}) {
     if (this._isCreatingMission) {
       this._createMissionAbort?.abort();
@@ -475,6 +511,9 @@ export class MissionPanel {
     const normalizedTab = subTab === 'points' || subTab === 'ruler' ? 'surface' : subTab;
     if (normalizedTab && ['flight', 'traj', 'surface'].includes(normalizedTab)) {
       this._detailTab = normalizedTab;
+      if (normalizedTab === 'traj') {
+        this._ensureTrajectoryFilesLoaded();
+      }
     }
     this.render();
   }
@@ -691,6 +730,8 @@ export class MissionPanel {
         mission.modules.notes = e.target.value || '';
         this._touchMission(mission);
         this._persistState();
+      } else if (e.target.matches('[data-field="traj-preset-select"]')) {
+        this._handleSelectTrajectoryPreset(mission, e.target.value);
       }
     });
 
@@ -908,6 +949,9 @@ export class MissionPanel {
         const tab = rawTab === 'points' || rawTab === 'ruler' ? 'surface' : rawTab;
         if (tab && ['flight', 'traj', 'surface'].includes(tab)) {
           this._detailTab = tab;
+          if (tab === 'traj') {
+            this._ensureTrajectoryFilesLoaded();
+          }
           this.render();
         }
         break;
@@ -1093,6 +1137,7 @@ export class MissionPanel {
         break;
       case 'load-default-traj':
         if (mission) {
+          this._deleteDocIdIfUnused(mission.trajectory?.docId, mission.id);
           this._trajErrorMsg = '';
           this._trajStatusMsg = 'Loading default trajectory...';
           mission.trajectory = {
@@ -1134,7 +1179,7 @@ export class MissionPanel {
       case 'clear-traj':
         if (mission) {
           const oldDocId = mission.trajectory?.docId;
-          if (oldDocId) deleteTrajectoryDoc(oldDocId);
+          if (oldDocId) this._deleteDocIdIfUnused(oldDocId, mission.id);
           mission.trajectory = {
             sourceType: 'none',
             url: null,
@@ -1246,7 +1291,7 @@ export class MissionPanel {
       const docId = `traj-${mission.id}-${Date.now()}`;
       await saveTrajectoryDoc(docId, jsonDoc);
       if (oldDocId && oldDocId !== docId) {
-        deleteTrajectoryDoc(oldDocId);
+        this._deleteDocIdIfUnused(oldDocId, mission.id);
       }
 
       mission.trajectory = {
@@ -1272,6 +1317,89 @@ export class MissionPanel {
       }
     } catch (err) {
       this._trajErrorMsg = err?.message || 'Failed to parse trajectory JSON';
+      this._trajStatusMsg = '';
+      this.render();
+    }
+  }
+
+  async _handleSelectTrajectoryPreset(mission, selectedKey) {
+    if (!mission || !selectedKey) return;
+    try {
+      if (selectedKey.startsWith('url:')) {
+        const url = selectedKey.slice(4);
+        if (!url) return;
+        if (mission.trajectory?.sourceType === 'url' && mission.trajectory.url === url) {
+          return;
+        }
+        const fileEntry = (this._trajFiles || []).find((f) => f.url === url);
+        const fallbackName = decodeURIComponent(url.split('/').pop() || 'trajectory.json');
+        const fileName = fileEntry?.fileName || fallbackName;
+
+        this._deleteDocIdIfUnused(mission.trajectory?.docId, mission.id);
+        mission.trajectory = {
+          sourceType: 'url',
+          url,
+          docId: null,
+          fileName,
+          visible: true,
+          meta: null,
+        };
+        this._trajErrorMsg = '';
+        this._trajStatusMsg = `Loading ${fileName}...`;
+        this._touchMission(mission);
+        this._persistState();
+        this.render();
+        await this.onLoadMissionTrajectory?.(mission, {
+          syncFromMeta: true,
+          overwriteSiteIfUnset: true,
+        });
+        return;
+      }
+
+      if (selectedKey.startsWith('doc:')) {
+        const sourceDocId = selectedKey.slice(4);
+        if (
+          !sourceDocId ||
+          (mission.trajectory?.sourceType === 'uploaded' && mission.trajectory.docId === sourceDocId)
+        ) {
+          return;
+        }
+        const sourceMission = this.missions.find((m) => m.trajectory?.docId === sourceDocId);
+        const storedDoc = await loadTrajectoryDoc(sourceDocId);
+        if (!storedDoc) {
+          this._trajErrorMsg = 'Saved trajectory payload was not found in local storage.';
+          this._trajStatusMsg = '';
+          this.render();
+          return;
+        }
+        const newDocId = `traj-${mission.id}-${Date.now()}`;
+        await saveTrajectoryDoc(newDocId, storedDoc);
+        const oldDocId = mission.trajectory?.docId;
+        if (oldDocId && oldDocId !== newDocId) {
+          this._deleteDocIdIfUnused(oldDocId, mission.id);
+        }
+        const fileName = sourceMission?.trajectory?.fileName || `mission-${newDocId}.json`;
+        mission.trajectory = {
+          sourceType: 'uploaded',
+          url: null,
+          docId: newDocId,
+          fileName,
+          visible: true,
+          meta: sourceMission?.trajectory?.meta ? { ...sourceMission.trajectory.meta } : null,
+        };
+        this._trajErrorMsg = '';
+        this._trajStatusMsg = `Attached ${fileName}`;
+        this._touchMission(mission);
+        this._persistState();
+        this.render();
+        await this.onLoadMissionTrajectory?.(mission, {
+          jsonDoc: storedDoc,
+          syncFromMeta: true,
+          overwriteSiteIfUnset: true,
+        });
+      }
+    } catch (err) {
+      this._trajErrorMsg = err?.message || 'Failed to switch mission trajectory';
       this._trajStatusMsg = '';
       this.render();
     }
@@ -2877,6 +3005,14 @@ export class MissionPanel {
         </div>
 
         <div class="mission-field-group">
+          <span class="mission-field-label">TRANSFER TYPE</span>
+          <select class="hud-input mission-select" data-field="new-mission-traj-type" ${busyAttr}>
+            <option value="direct" ${draft.trajectoryType !== 'hohmann' ? 'selected' : ''}>Direct (Lambert)</option>
+            <option value="hohmann" ${draft.trajectoryType === 'hohmann' ? 'selected' : ''}>Hohmann</option>
+          </select>
+        </div>
+
+        <div class="mission-field-group">
           <span class="mission-field-label">FLIGHT MODE</span>
           <input type="hidden" data-field="new-mission-flight-mode" value="${esc(draft.flightMode || 'fast')}" />
           <div class="mission-mode-pills">
@@ -2938,21 +3074,12 @@ export class MissionPanel {
               <span class="mission-source-chip ${solverBadgeClass}">${esc(solverStateBadge)}</span>
             </div>
 
-            <div class="mission-coord-grid">
-              <div class="mission-field-group">
-                <span class="mission-field-label">TRANSFER TYPE</span>
-                <select class="hud-input mission-select" data-field="new-mission-traj-type" ${busyAttr}>
-                  <option value="direct" ${draft.trajectoryType !== 'hohmann' ? 'selected' : ''}>Direct (Lambert)</option>
-                  <option value="hohmann" ${draft.trajectoryType === 'hohmann' ? 'selected' : ''}>Hohmann</option>
-                </select>
-              </div>
-              <div class="mission-field-group">
-                <span class="mission-field-label">DATE MODE</span>
-                <select class="hud-input mission-select" data-field="new-mission-date-mode" ${draft.flightMode === 'launch_window' ? 'disabled title="Launch Window search requires Landing Day (UTC)"' : ''} ${busyAttr}>
-                  <option value="arrival" ${draft.flightMode === 'launch_window' || draft.dateMode !== 'launch' ? 'selected' : ''}>Landing Day (UTC)</option>
-                  <option value="launch" ${draft.flightMode !== 'launch_window' && draft.dateMode === 'launch' ? 'selected' : ''}>Launch Day (UTC)</option>
-                </select>
-              </div>
+            <div class="mission-field-group">
+              <span class="mission-field-label">DATE MODE</span>
+              <select class="hud-input mission-select" data-field="new-mission-date-mode" ${draft.flightMode === 'launch_window' ? 'disabled title="Launch Window search requires Landing Day (UTC)"' : ''} ${busyAttr}>
+                <option value="arrival" ${draft.flightMode === 'launch_window' || draft.dateMode !== 'launch' ? 'selected' : ''}>Landing Day (UTC)</option>
+                <option value="launch" ${draft.flightMode !== 'launch_window' && draft.dateMode === 'launch' ? 'selected' : ''}>Launch Day (UTC)</option>
+              </select>
             </div>
 
             <div class="mission-field-group">
@@ -3675,10 +3802,90 @@ export class MissionPanel {
   }
 
   _renderTrajTab(mission) {
+    if (!this._trajFiles && !this._isTrajFilesLoading) {
+      this._ensureTrajectoryFilesLoaded();
+    }
     const esc = MissionPanel.escapeHtml;
     const traj = mission.trajectory || {};
     const meta = traj.meta;
     const hasTraj = traj.sourceType && traj.sourceType !== 'none';
+
+    const currentKey =
+      traj.sourceType === 'url' && traj.url
+        ? `url:${traj.url}`
+        : traj.sourceType === 'uploaded' && traj.docId
+          ? `doc:${traj.docId}`
+          : '';
+
+    const selectableOptions = [];
+    const seenKeys = new Set();
+    const repoFiles =
+      Array.isArray(this._trajFiles) && this._trajFiles.length > 0
+        ? this._trajFiles
+        : [
+            {
+              fileName: 'trajectory-2026-11-15T121332Z.json',
+              url: TRAJECTORY_CONFIG.DEFAULT_URL,
+            },
+          ];
+
+    for (const f of repoFiles) {
+      if (!f?.url) continue;
+      const key = `url:${f.url}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      const extra = [
+        f.rocket || null,
+        Number.isFinite(f.durationSec) ? formatTransitDuration(f.durationSec) : null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      selectableOptions.push({
+        key,
+        label: extra ? `${f.fileName} (${extra})` : f.fileName,
+      });
+    }
+
+    for (const m of this.missions) {
+      const mTraj = m?.trajectory;
+      if (!mTraj || mTraj.sourceType === 'none') continue;
+      if (mTraj.sourceType === 'url' && mTraj.url) {
+        const key = `url:${mTraj.url}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        selectableOptions.push({
+          key,
+          label: `[${m.name}] ${mTraj.fileName || mTraj.url}`,
+        });
+      } else if (mTraj.sourceType === 'uploaded' && mTraj.docId) {
+        const key = `doc:${mTraj.docId}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        const prefix = m.id === mission.id ? 'Current' : m.name;
+        const desc = mTraj.fileName || mTraj.meta?.rocket || 'Saved Trajectory';
+        selectableOptions.push({
+          key,
+          label: `[${prefix}] ${desc}`,
+        });
+      }
+    }
+
+    if (currentKey && !seenKeys.has(currentKey)) {
+      selectableOptions.unshift({
+        key: currentKey,
+        label: traj.fileName || traj.url || 'Attached Trajectory',
+      });
+    }
+
+    const trajSelectOptionsHtml = [
+      !currentKey
+        ? `<option value="" selected>— Select trajectory file or mission —</option>`
+        : '',
+      ...selectableOptions.map(
+        (opt) =>
+          `<option value="${esc(opt.key)}" ${opt.key === currentKey ? 'selected' : ''}>${esc(opt.label)}</option>`
+      ),
+    ].join('');
 
     const phaseHtml = (meta?.phases || [])
       .map((phase) => {
@@ -3709,6 +3916,16 @@ export class MissionPanel {
 
         <div class="mission-traj-file-row">
           <span class="mission-traj-filename">${esc(traj.fileName || 'No trajectory file loaded')}</span>
+        </div>
+
+        <div class="mission-field-group">
+          <div class="mission-field-label-row">
+            <span class="mission-field-label">SELECT TRAJECTORY</span>
+            ${this._isTrajFilesLoading ? '<span class="mission-field-readout">SCANNING...</span>' : ''}
+          </div>
+          <select class="hud-input mission-select" data-field="traj-preset-select">
+            ${trajSelectOptionsHtml}
+          </select>
         </div>
 
         <div class="mission-btn-strip">
@@ -4167,7 +4384,13 @@ export class MissionPanel {
     const height = window.innerHeight || 1;
 
     const projectToLabel = (normal, radius, el) => {
-      if (normal.dot(this._camDir) < horizonCos - 0.002) {
+      const dx = camPos.x - normal.x * radius;
+      const dy = camPos.y - normal.y * radius;
+      const dz = camPos.z - normal.z * radius;
+      if (
+        dx * dx + dy * dy + dz * dz < 0.0003 * 0.0003 ||
+        normal.dot(this._camDir) < horizonCos - 0.002
+      ) {
         el.style.display = 'none';
         return;
       }
