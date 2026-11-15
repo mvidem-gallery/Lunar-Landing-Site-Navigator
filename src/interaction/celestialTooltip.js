@@ -2,24 +2,24 @@ import './celestialTooltip.css';
 
 const CELESTIAL_PROFILES = {
   SUN: {
-    name: 'Сонце',
-    badge: 'ЗОРЯ · G2V',
-    description: 'Центральна зоря Сонячної системи (жовтий карлик), головне джерело світла та теплового випромінювання.',
-    radius: '696 340 км (400× R☽)',
-    physicalSpecLabel: 'Фотосфера:',
-    physicalSpecValue: '5 778 K',
-    lightDelay: '~8 хв 19 с',
+    name: 'Sun',
+    badge: 'STAR · G2V',
+    description: 'Central star of the Solar System (yellow dwarf), primary source of light and thermal radiation.',
+    radius: '696,340 km (400× R☽)',
+    physicalSpecLabel: 'Photosphere:',
+    physicalSpecValue: '5,778 K',
+    lightDelay: '~8m 19s',
     angularSize: '~0.53°',
   },
   EARTH: {
-    name: 'Земля',
-    badge: 'ПЛАНЕТА',
-    description: 'Третя планета від Сонця, єдине відоме астрономічне тіло з біосферою та рідкою гідросферою.',
-    radius: '6 371 км (3.67× R☽)',
-    physicalSpecLabel: 'Орбіт. період:',
-    physicalSpecValue: '365.25 діб',
-    lightDelay: '~1.28 с (радіосигнал)',
-    angularSize: '~1.9° з орбіти Місяця',
+    name: 'Earth',
+    badge: 'PLANET',
+    description: 'Third planet from the Sun, the only known astronomical body with a biosphere and liquid hydrosphere.',
+    radius: '6,371 km (3.67× R☽)',
+    physicalSpecLabel: 'Orbital Period:',
+    physicalSpecValue: '365.25 days',
+    lightDelay: '~1.28 s (radio signal)',
+    angularSize: '~1.9° from lunar orbit',
   },
 };
 
@@ -87,32 +87,32 @@ export class CelestialTooltip {
         ? this._formatCoord(ephemData.subSolarLat, ephemData.subSolarLon)
         : '—';
       const distStr = ephemData?.sunDistanceAu
-        ? `${ephemData.sunDistanceAu.toFixed(4)} а.о.`
-        : '~1.000 а.о. (149.6 млн км)';
+        ? `${ephemData.sunDistanceAu.toFixed(4)} AU`
+        : '~1.000 AU (149.6M km)';
 
       this.specsEl.innerHTML = this._renderRows([
-        ['Радіус:', profile.radius],
+        ['Radius:', profile.radius],
         [profile.physicalSpecLabel, profile.physicalSpecValue],
-        ['Кутовий діаметр:', profile.angularSize],
-        ['Відстань:', distStr],
-        ['Затримка світла:', profile.lightDelay],
-        ['Зеніт на Місяці:', subSolar],
+        ['Angular Diameter:', profile.angularSize],
+        ['Distance:', distStr],
+        ['Light Delay:', profile.lightDelay],
+        ['Subsolar Point:', subSolar],
       ]);
     } else if (type === 'EARTH') {
       const subEarth = ephemData
         ? this._formatCoord(ephemData.subEarthLat, ephemData.subEarthLon)
         : '—';
       const distStr = ephemData?.earthDistanceKm
-        ? `${Math.round(ephemData.earthDistanceKm).toLocaleString('uk-UA')} км`
-        : '~384 400 км';
+        ? `${Math.round(ephemData.earthDistanceKm).toLocaleString('en-US')} km`
+        : '~384,400 km';
 
       this.specsEl.innerHTML = this._renderRows([
-        ['Радіус:', profile.radius],
+        ['Radius:', profile.radius],
         [profile.physicalSpecLabel, profile.physicalSpecValue],
-        ['Кутовий діаметр:', profile.angularSize],
-        ['Відстань до Місяця:', distStr],
-        ['Затримка сигналу:', profile.lightDelay],
-        ['Субземна точка:', subEarth],
+        ['Angular Diameter:', profile.angularSize],
+        ['Distance to Moon:', distStr],
+        ['Signal Delay:', profile.lightDelay],
+        ['Sub-Earth Point:', subEarth],
       ]);
     }
 

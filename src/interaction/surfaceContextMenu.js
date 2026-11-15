@@ -3,14 +3,15 @@ import './surfaceContextMenu.css';
 
 export class SurfaceContextMenu {
   /**
-   * @param {HTMLElement} canvasContainer - DOM-контейнер 3D-сцени
+   * @param {HTMLElement} canvasContainer
    * @param {Object} options
-   * @param {Function} options.getHoveredCoords - Повертає { lat, lon } або null
-   * @param {Function} options.getCurrentDate - Повертає поточний об'єкт Date симуляції
-   * @param {Function} [options.getSunDirection] - Повертає нормалізований THREE.Vector3 напрямку на Сонце
-   * @param {Function} [options.getEarthDirection] - Повертає нормалізований THREE.Vector3 напрямку на Землю
-   * @param {Function} options.onLandTo - Колбек виклику зовнішньої програми
-   * @param {Function} [options.onSaveLandingSite] - Колбек збереження точки посадки
+   * @param {Function} options.getHoveredCoords
+   * @param {Function} options.getCurrentDate
+   * @param {Function} [options.getSunDirection]
+   * @param {Function} [options.getEarthDirection]
+   * @param {Function} options.onLandTo
+   * @param {Function} [options.onSaveLandingSite]
+   * @param {Function} [options.onAddToMission]
    */
   constructor(
     canvasContainer,
@@ -21,6 +22,7 @@ export class SurfaceContextMenu {
       getEarthDirection,
       onLandTo,
       onSaveLandingSite,
+      onAddToMission,
     }
   ) {
     this.container = canvasContainer;
@@ -30,6 +32,7 @@ export class SurfaceContextMenu {
     this.getEarthDirection = getEarthDirection;
     this.onLandTo = onLandTo;
     this.onSaveLandingSite = onSaveLandingSite;
+    this.onAddToMission = onAddToMission;
 
     this.activeTarget = null;
     this._pointerDownPos = { x: 0, y: 0 };
@@ -51,28 +54,32 @@ export class SurfaceContextMenu {
       </div>
       <div class="lunar-context-telemetry">
         <div class="lunar-telemetry-row">
-          <span class="lunar-telemetry-label">Кут Сонця:</span>
+          <span class="lunar-telemetry-label">Sun Elevation:</span>
           <span class="lunar-telemetry-val" data-field="sun-angle">+0.0°</span>
         </div>
         <div class="lunar-telemetry-row">
-          <span class="lunar-telemetry-label">Освітленість:</span>
-          <span class="lunar-telemetry-val" data-field="illumination">0% (НІЧ)</span>
+          <span class="lunar-telemetry-label">Illumination:</span>
+          <span class="lunar-telemetry-val" data-field="illumination">0% (NIGHT)</span>
         </div>
         <div class="lunar-illum-bar-wrap">
           <div class="lunar-illum-bar-fill" data-field="illum-bar"></div>
         </div>
         <div class="lunar-telemetry-row" style="margin-top: 2px;">
-          <span class="lunar-telemetry-label">Контакт із Землею:</span>
-          <span class="lunar-telemetry-val" data-field="earth-los">ВИДИМА</span>
+          <span class="lunar-telemetry-label">Earth LOS:</span>
+          <span class="lunar-telemetry-val" data-field="earth-los">VISIBLE</span>
         </div>
       </div>
+      <button type="button" class="lunar-context-menu-item" data-action="add-to-mission">
+        <span>Add to Active Mission</span>
+        <span class="lunar-context-menu-item-icon">＋</span>
+      </button>
+      <button type="button" class="lunar-context-menu-item" data-action="save-landing-site">
+        <span>Save Landing Site</span>
+        <span class="lunar-context-menu-item-icon">★</span>
+      </button>
       <button type="button" class="lunar-context-menu-item" data-action="land-to">
         <span>Land to</span>
         <span class="lunar-context-menu-item-icon">⌖</span>
-      </button>
-      <button type="button" class="lunar-context-menu-item" data-action="save-landing-site">
-        <span>Зберегти точку посадки</span>
-        <span class="lunar-context-menu-item-icon">★</span>
       </button>
     `;
 
@@ -81,8 +88,9 @@ export class SurfaceContextMenu {
     this.illuminationEl = this.menuEl.querySelector('[data-field="illumination"]');
     this.illumBarEl = this.menuEl.querySelector('[data-field="illum-bar"]');
     this.earthLosEl = this.menuEl.querySelector('[data-field="earth-los"]');
-    this.landBtn = this.menuEl.querySelector('[data-action="land-to"]');
+    this.addToMissionBtn = this.menuEl.querySelector('[data-action="add-to-mission"]');
     this.saveSiteBtn = this.menuEl.querySelector('[data-action="save-landing-site"]');
+    this.landBtn = this.menuEl.querySelector('[data-action="land-to"]');
 
     document.body.appendChild(this.menuEl);
   }
@@ -172,6 +180,14 @@ export class SurfaceContextMenu {
       this.show(e.clientX, e.clientY, this.activeTarget);
     });
 
+    this.addToMissionBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.activeTarget && typeof this.onAddToMission === 'function') {
+        this.onAddToMission({ ...this.activeTarget });
+      }
+      this.hide();
+    });
+
     this.landBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (this.activeTarget && typeof this.onLandTo === 'function') {
@@ -188,7 +204,6 @@ export class SurfaceContextMenu {
       this.hide();
     });
 
-    // Фіксуємо вхід курсора в область вікна меню та закриваємо при виході за його межі
     this.menuEl.addEventListener('pointerenter', () => {
       this._hasEnteredMenu = true;
     });
@@ -197,14 +212,12 @@ export class SurfaceContextMenu {
       this.hide();
     });
 
-    // Контроль відведення курсора, навіть якщо користувач не встиг навести безпосередньо на елемент
     window.addEventListener(
       'pointermove',
       (e) => {
         if (!this.activeTarget) return;
 
         const rect = this.menuEl.getBoundingClientRect();
-        // Буфер 14px навколо вікна, щоб меню не зникало в момент відкриття біля курсора
         const pad = this._hasEnteredMenu ? 2 : 14;
         const isInside =
           e.clientX >= rect.left - pad &&
@@ -243,13 +256,13 @@ export class SurfaceContextMenu {
 
     this.illuminationEl.className = 'lunar-telemetry-val';
     if (target.sunElevDeg > 3.0) {
-      this.illuminationEl.textContent = `${target.illumPercent}% (ДЕНЬ)`;
+      this.illuminationEl.textContent = `${target.illumPercent}% (DAY)`;
       this.illuminationEl.classList.add('sun-day');
     } else if (target.sunElevDeg >= -6.0) {
-      this.illuminationEl.textContent = `${target.illumPercent}% (СУТІНКИ)`;
+      this.illuminationEl.textContent = `${target.illumPercent}% (TWILIGHT)`;
       this.illuminationEl.classList.add('sun-twilight');
     } else {
-      this.illuminationEl.textContent = `0% (НІЧ)`;
+      this.illuminationEl.textContent = `0% (NIGHT)`;
       this.illuminationEl.classList.add('sun-night');
     }
 
@@ -258,16 +271,15 @@ export class SurfaceContextMenu {
     const earthSign = target.earthElevDeg >= 0 ? '+' : '';
     this.earthLosEl.className = 'lunar-telemetry-val';
     if (target.hasEarthContact) {
-      this.earthLosEl.textContent = `Є (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
+      this.earthLosEl.textContent = `YES (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
       this.earthLosEl.classList.add('earth-visible');
     } else {
-      this.earthLosEl.textContent = `НЕМАЄ (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
+      this.earthLosEl.textContent = `NONE (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
       this.earthLosEl.classList.add('earth-hidden');
     }
 
     this.menuEl.classList.add('visible');
 
-    // Відкриваємо меню так, щоб курсор одразу опинився всередині верхнього кута вікна
     const rect = this.menuEl.getBoundingClientRect();
     const rawX = clientX - 6;
     const rawY = clientY - 6;

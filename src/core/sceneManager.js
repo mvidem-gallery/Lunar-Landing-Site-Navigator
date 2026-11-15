@@ -80,6 +80,10 @@ export class SceneManager {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
+  resetView() {
+    this.flyToCoordinates(0, 0, 1.0);
+  }
+
   flyToCoordinates(latDeg, lonDeg, targetZoom = 65) {
     const latRad = THREE.MathUtils.degToRad(latDeg);
     const lonRad = THREE.MathUtils.degToRad(lonDeg);

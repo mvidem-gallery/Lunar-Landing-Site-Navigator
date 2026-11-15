@@ -1,8 +1,14 @@
 import { HORIZONS_CONFIG } from '../config/constants.js';
 
+const ephemCache = new Map();
+
 export class HorizonsClient {
   static async fetchEphemerisData(dateObj) {
     const startTime = this.formatDateForJPL(dateObj);
+    if (ephemCache.has(startTime)) {
+      return ephemCache.get(startTime);
+    }
+
     const stopTime = this.formatDateForJPL(new Date(dateObj.getTime() + 60000));
 
     const params = new URLSearchParams({
@@ -23,14 +29,20 @@ export class HorizonsClient {
       if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
 
       const data = await response.json();
-      if (!data.result) throw new Error('Відсутнє поле result у відповіді JPL');
+      if (!data.result) throw new Error('Missing result field in JPL response');
 
       const parsed = this.parseHorizonsResponse(data.result);
-      return { ...parsed, source: 'NASA JPL Horizons' };
+      const result = { ...parsed, source: 'NASA JPL Horizons' };
+      if (ephemCache.size > 200) {
+        const oldestKey = ephemCache.keys().next().value;
+        ephemCache.delete(oldestKey);
+      }
+      ephemCache.set(startTime, result);
+      return result;
     } catch (error) {
-      console.warn('Використання аналітичної моделі через помилку API:', error.message);
+      console.warn('Using analytical fallback due to API error:', error.message);
       const fallback = this.calculateAnalyticalFallback(dateObj);
-      return { ...fallback, source: 'Аналітичний розрахунок (Offline)' };
+      return { ...fallback, source: 'Analytical Model (Offline)' };
     }
   }
 
@@ -42,7 +54,7 @@ export class HorizonsClient {
     const soeIndex = rawText.indexOf('$$SOE');
     const eoeIndex = rawText.indexOf('$$EOE');
     if (soeIndex === -1 || eoeIndex === -1) {
-      throw new Error('Маркери ефемерид $$SOE/$$EOE не знайдено');
+      throw new Error('Ephemeris markers $$SOE/$$EOE not found');
     }
 
     const ephemBlock = rawText.substring(soeIndex + 5, eoeIndex).trim();
@@ -56,7 +68,7 @@ export class HorizonsClient {
     const subSolarLat = parseFloat(parts[len - 1]);
 
     if ([subObsLon, subObsLat, subSolarLon, subSolarLat].some(Number.isNaN)) {
-      throw new Error('Не вдалося розпарсити координати з рядка: ' + firstLine);
+      throw new Error('Failed to parse coordinates from line: ' + firstLine);
     }
 
     return {
@@ -69,21 +81,20 @@ export class HorizonsClient {
   }
 
   static calculateAnalyticalFallback(date) {
-    const jd = (date.getTime() / 86400000) + 2440587.5;
+    const jd = date.getTime() / 86400000 + 2440587.5;
     const d = jd - 2451545.0;
     const D = (297.8501921 + 12.19074912 * d) % 360;
-    let subSolarLon = (180 - D) % 360;
-    if (subSolarLon > 180) subSolarLon -= 360;
-    if (subSolarLon < -180) subSolarLon += 360;
+    let subSolarLon = (((180 - D) % 360) + 540) % 360 - 180;
+    const subSolarLat = 1.54 * Math.sin(((D * Math.PI) / 180) * 0.99);
 
     const subEarthLon = 6.0 * Math.sin(d * 0.228);
-    const subEarthLat = 6.5 * Math.cos(d * 0.230);
+    const subEarthLat = 6.5 * Math.cos(d * 0.23);
 
     return {
       subEarthLon,
       subEarthLat,
       subSolarLon,
-      subSolarLat: 0.0,
+      subSolarLat,
       distanceAU: 1.0,
     };
   }

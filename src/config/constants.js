@@ -43,8 +43,8 @@ const KAGUYA_TC_USGS_WMS_URL =
 export const MAP_LAYERS = {
   LRO_WAC_LOCAL: {
     id: 'LRO_WAC_LOCAL',
-    name: 'Локальна LRO WAC (Z2–Z8) + Kaguya TC (Z9–Z12)',
-    // Завантажені локальні тайли для рівнів Z2–Z8 (до 83 м/піксель)
+    name: 'Local LRO WAC (Z2–Z8) + Kaguya TC (Z9–Z12)',
+    // Pre-downloaded local tiles for Z2–Z8 (up to 83 m/pixel)
     url: '/tiles/lro_wac/{z}/{x}/{y}.jpg',
     fallbackUrl:
       'https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg',
@@ -75,7 +75,7 @@ export const MAP_LAYERS = {
   },
   KAGUYA_TC_GLOBAL: {
     id: 'KAGUYA_TC_GLOBAL',
-    name: 'Глобальна Kaguya TC Ortho 4096ppd (Z2–Z12)',
+    name: 'Global Kaguya TC Ortho 4096ppd (Z2–Z12)',
     url: KAGUYA_TC_WMTS_URL,
     fallbackUrl: KAGUYA_TC_USGS_WMS_URL,
     isWebMercatorQuad: false,

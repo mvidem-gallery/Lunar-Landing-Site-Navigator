@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="uk">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,299 +11,348 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/src/style.css" />
-    <style>
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background-color: #000000;
-      }
-
-      #canvas-container {
-        position: fixed;
-        inset: 0;
-        width: 100vw;
-        height: 100vh;
-        z-index: 1;
-      }
-
-      .hud-panel {
-        position: fixed;
-        z-index: 10;
-        background: rgba(14, 21, 33, 0.84);
-        border: 1px solid rgba(79, 195, 247, 0.25);
-        border-radius: 6px;
-        padding: 12px 14px;
-        color: #d8e6f3;
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 12px;
-        backdrop-filter: blur(6px);
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.65);
-        user-select: none;
-      }
-
-      #controls-panel {
-        top: 64px;
-        left: 16px;
-        width: 340px;
-        max-height: calc(100vh - 80px);
-        overflow-y: auto;
-      }
-
-      #telemetry-panel {
-        top: 16px;
-        right: 16px;
-        width: 280px;
-      }
-
-      #scale-bar-container {
-        position: fixed;
-        right: 16px;
-        bottom: 16px;
-        z-index: 10;
-        background: rgba(14, 21, 33, 0.84);
-        border: 1px solid rgba(79, 195, 247, 0.25);
-        border-radius: 6px;
-        padding: 8px 12px;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        pointer-events: none;
-      }
-
-      .panel-header {
-        font-size: 11px;
-        font-weight: bold;
-        letter-spacing: 0.8px;
-        color: #90caf9;
-        border-bottom: 1px solid rgba(79, 195, 247, 0.2);
-        padding-bottom: 6px;
-        margin-bottom: 10px;
-      }
-
-      .time-controls {
-        display: flex;
-        gap: 6px;
-        margin-bottom: 10px;
-      }
-
-      .hud-input,
-      .hud-select,
-      .hud-btn {
-        background: rgba(24, 35, 52, 0.9);
-        border: 1px solid rgba(79, 195, 247, 0.3);
-        border-radius: 4px;
-        color: #e3f2fd;
-        font-family: inherit;
-        font-size: 12px;
-        padding: 5px 8px;
-      }
-
-      .hud-input {
-        flex: 1;
-      }
-
-      .hud-btn {
-        cursor: pointer;
-        padding: 5px 12px;
-      }
-
-      .hud-btn:hover {
-        background: rgba(41, 61, 89, 0.95);
-        border-color: #4fc3f7;
-      }
-
-      .hud-select {
-        width: 100%;
-        margin-bottom: 10px;
-      }
-
-      .checkbox-group {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .control-checkbox {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-        font-size: 11.5px;
-      }
-
-      .hud-divider {
-        height: 1px;
-        background: rgba(79, 195, 247, 0.2);
-        margin: 10px 0;
-      }
-
-      .data-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        line-height: 1.55;
-        font-size: 11.5px;
-      }
-
-      .data-row span:first-child {
-        color: #9fb3c8;
-      }
-
-      .data-val {
-        font-weight: bold;
-        color: #e1f5fe;
-        text-align: right;
-      }
-
-      .scale-label {
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 11px;
-        font-weight: bold;
-        color: #ffd54f;
-        margin-bottom: 4px;
-      }
-
-      .scale-line {
-        width: 110px;
-        height: 6px;
-        border-left: 2px solid #4fc3f7;
-        border-right: 2px solid #4fc3f7;
-        border-bottom: 2px solid #4fc3f7;
-      }
-    </style>
   </head>
   <body>
-    <!-- Повноекранний 3D-простір із Місяцем у центрі -->
+    <!-- Fullscreen 3D Moon viewport -->
     <div id="canvas-container"></div>
 
-    <!-- Верхнє ліве меню точок посадки -->
-    <div id="top-left-menu" class="hud-panel">
-      <button type="button" id="landing-sites-toggle-btn" class="top-menu-btn">
-        <span>📍 Точки посадки</span>
-        <span class="top-menu-meta">
-          <span id="landing-sites-count" class="top-menu-count">42</span>
-          <span id="landing-sites-chevron">▾</span>
-        </span>
-      </button>
-    </div>
-
-    <!-- Ліва верхня панель керування, параметрів орбіти та ефемерид -->
-    <div id="controls-panel" class="hud-panel">
-      <div class="panel-header">ЧАС СПОСТЕРЕЖЕННЯ (UTC)</div>
-
-      <div class="time-controls">
-        <input type="datetime-local" id="date-picker" class="hud-input" />
-        <button type="button" id="now-btn" class="hud-btn">Зараз</button>
-      </div>
-
-      <select id="layer-selector" class="hud-select">
-        <option value="LRO_WAC_LOCAL" selected>Локальна LRO WAC (Z2–Z8) + Kaguya TC (Z9–Z12)</option>
-        <option value="KAGUYA_TC_GLOBAL">Глобальна Kaguya TC Ortho 4096ppd (Z2–Z12)</option>
-      </select>
-
-      <div class="checkbox-group">
-        <label class="control-checkbox">
-          <input type="checkbox" id="toggle-earth-disk" />
-          <span>Видима з Землі область (лібрація)</span>
-        </label>
-
-        <label class="control-checkbox">
-          <input type="checkbox" id="toggle-solar-lighting" checked />
-          <span>Освітлення відносно Сонця</span>
-        </label>
-
-        <label class="control-checkbox">
-          <input type="checkbox" id="toggle-illumination-heatmap" />
-          <span>Теплова карта освітленості</span>
-        </label>
-
-        <div id="heatmap-legend" style="display: none; margin: 2px 0 4px 0;">
-          <div
-            style="
-              height: 8px;
-              border-radius: 4px;
-              background: linear-gradient(
-                90deg,
-                #d11a0f 0%,
-                #f55714 25%,
-                #fcb829 52%,
-                #f5f56b 74%,
-                #73ebd9 86%,
-                #2959f5 95%,
-                #ad2eeb 100%
-              );
-              border: 1px solid rgba(255, 255, 255, 0.2);
-            "
-          ></div>
-          <div
-            style="
-              display: flex;
-              justify-content: space-between;
-              font-size: 10px;
-              color: #9ec5d8;
-              margin-top: 2px;
-            "
+    <!-- Left workspace: icon rail + expandable drawer -->
+    <aside id="left-dock" class="left-dock">
+      <nav id="left-rail" class="left-rail" aria-label="Tool Navigation">
+        <div class="rail-group">
+          <button
+            type="button"
+            class="rail-btn active"
+            data-rail-tab="missions"
+            title="Missions (waypoints & saved ruler measurements)"
           >
-            <span>0% (Ніч)</span>
-            <span>50%</span>
-            <span>85%</span>
-            <span>100%</span>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18M3.6 9h16.8M3.6 15h16.8" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="rail-btn"
+            data-rail-tab="sites"
+            title="Landing Sites Catalog (NASA & Custom)"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10z" />
+              <circle cx="12" cy="11" r="2.2" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="rail-btn"
+            data-rail-tab="layers"
+            title="Base Map Layers & Visualization"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M12 3L3 8l9 5 9-5-9-5z" />
+              <path d="M3 13l9 5 9-5" />
+              <path d="M3 18l9 5 9-5" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="rail-group">
+          <button
+            type="button"
+            id="rail-ruler-btn"
+            class="rail-btn"
+            title="Distance Ruler (R)"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M3 17L17 3l4 4L7 21H3v-4z" />
+              <path d="M13 7l2 2M10 10l2 2M7 13l2 2" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            id="left-collapse-btn"
+            class="rail-btn"
+            title="Collapse / Expand Left Panel"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M15 6l-6 6 6 6" />
+            </svg>
+          </button>
+        </div>
+      </nav>
+
+      <div id="left-drawer" class="left-drawer">
+        <div class="drawer-top-header">
+          <span id="left-drawer-title" class="drawer-title">Mission</span>
+          <span id="left-drawer-badge" class="drawer-badge">ACTIVE</span>
+        </div>
+
+        <!-- Tab 1: Missions -->
+        <div id="tab-missions" class="drawer-tab-pane active">
+          <div id="mission-panel-slot" class="drawer-slot-fill"></div>
+        </div>
+
+        <!-- Tab 2: Landing Sites -->
+        <div id="tab-sites" class="drawer-tab-pane">
+          <div id="sites-drawer-slot" class="drawer-slot-fill"></div>
+        </div>
+
+        <!-- Tab 3: Base Map Layers -->
+        <div id="tab-layers" class="drawer-tab-pane">
+          <div class="layers-tab-content">
+            <div class="layers-group-label">BASE MOSAICS</div>
+            <select id="layer-selector" class="hud-select">
+              <option value="LRO_WAC_LOCAL" selected>Local LRO WAC (Z2–Z8) + Kaguya TC (Z9–Z12)</option>
+              <option value="KAGUYA_TC_GLOBAL">Global Kaguya TC Ortho 4096ppd (Z2–Z12)</option>
+            </select>
+
+            <div class="layer-info-card">
+              <div class="layer-info-title" id="active-layer-name">LRO WAC + Kaguya TC Ortho</div>
+              <div class="layer-info-sub" id="active-layer-desc">
+                Levels Z2–Z8 load locally (up to 83 m/px), while Z9–Z12 stream from NASA Moon Trek / USGS WMS.
+              </div>
+            </div>
+
+            <div class="layers-group-label" style="margin-top: 6px;">VISUALIZATION OPTIONS</div>
+            <div class="checkbox-group">
+              <label class="control-checkbox">
+                <input type="checkbox" id="toggle-earth-disk" />
+                <span>Earth-Visible Region (Libration)</span>
+              </label>
+
+              <label class="control-checkbox">
+                <input type="checkbox" id="toggle-solar-lighting" checked />
+                <span>Solar Illumination</span>
+              </label>
+
+              <label class="control-checkbox">
+                <input type="checkbox" id="toggle-illumination-heatmap" />
+                <span>Illumination Heatmap</span>
+              </label>
+
+              <label class="control-checkbox">
+                <input type="checkbox" id="toggle-coord-grid" />
+                <span>Coordinate Graticule (Lat / Lon)</span>
+              </label>
+            </div>
           </div>
         </div>
 
-        <label class="control-checkbox">
-          <input type="checkbox" id="toggle-coord-grid" />
-          <span>Координатна сітка (широта / довгота)</span>
-        </label>
+        <!-- Bottom pinned Map Overlays bar -->
+        <div class="map-overlays-dock">
+          <button type="button" id="overlays-collapse-btn" class="overlays-header-btn">
+            <span>▾ Map Overlays</span>
+            <span class="overlays-mini-hint">Quick toggles</span>
+          </button>
+
+          <div id="overlays-body" class="overlays-body">
+            <div id="heatmap-legend" class="heatmap-legend-box" style="display: none;">
+              <div class="heatmap-gradient"></div>
+              <div class="heatmap-ticks">
+                <span>0% (Night)</span>
+                <span>50%</span>
+                <span>85%</span>
+                <span>100%</span>
+              </div>
+            </div>
+
+            <div class="overlays-chips-grid">
+              <button type="button" class="overlay-chip" data-overlay-toggle="grid" title="Coordinate Graticule">
+                <span>🌐 Graticule</span>
+              </button>
+              <button type="button" class="overlay-chip active" data-overlay-toggle="solar" title="Solar Illumination">
+                <span>☀ Solar</span>
+              </button>
+              <button type="button" class="overlay-chip" data-overlay-toggle="heatmap" title="Illumination Heatmap">
+                <span>🔥 Heatmap</span>
+              </button>
+              <button type="button" class="overlay-chip" data-overlay-toggle="earth" title="Earth Visibility Region">
+                <span>🌍 Libration</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Top floating brand & coordinate/site search -->
+    <header id="top-floating-bar" class="top-floating-bar">
+      <div class="brand-row">
+        <div class="brand-title">
+          <span class="brand-accent">LUNAR</span>
+          <span class="brand-sub">LROC / KAGUYA</span>
+        </div>
+        <div id="top-mission-pill" class="top-mission-pill" title="Active Mission">
+          🎯 —
+        </div>
       </div>
 
-      <div class="ruler-toolbar-row">
-        <button type="button" id="ruler-toggle-btn" class="hud-btn ruler-toggle-btn">
-          <span>📏 Лінійка відстаней</span>
-          <span class="ruler-shortcut-tag">R</span>
+      <div class="global-search-box">
+        <span class="search-icon">⌕</span>
+        <input
+          type="text"
+          id="global-search-input"
+          class="global-search-input"
+          placeholder="Type lat, lon (e.g. 0.67, 23.47) or search..."
+          autocomplete="off"
+        />
+        <button type="button" id="global-search-clear" class="global-search-clear" title="Clear">✕</button>
+        <div id="global-search-results" class="global-search-results"></div>
+      </div>
+    </header>
+
+    <!-- Top-right compass & quick action toolbar -->
+    <div id="right-toolbar" class="right-toolbar">
+      <div id="lunar-compass" class="lunar-compass" title="Lunar North (N) / Sun Direction">
+        <span class="compass-n">N</span>
+        <svg id="compass-needle" viewBox="0 0 24 24" width="22" height="22">
+          <path d="M12 3l3.2 9H8.8L12 3z" fill="#ff5c5c" />
+          <path d="M12 21l-3.2-9h6.4L12 21z" fill="#64748b" />
+        </svg>
+        <span id="compass-sun-dot" class="compass-sun-dot" title="Sun Direction"></span>
+      </div>
+
+      <div class="right-btn-stack">
+        <button
+          type="button"
+          id="right-info-toggle-btn"
+          class="right-tool-btn"
+          title="Open / Close Moon Telemetry & Info Panel (I)"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 16v-4M12 8h.01" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          id="ruler-toggle-btn"
+          class="right-tool-btn"
+          title="Distance Ruler (R)"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M3 17L17 3l4 4L7 21H3v-4z" />
+            <path d="M13 7l2 2M10 10l2 2M7 13l2 2" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          id="home-view-btn"
+          class="right-tool-btn"
+          title="Reset Camera to Full Moon View"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M3 10.5L12 3l9 7.5" />
+            <path d="M5 9.5V20h14V9.5" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          id="quick-solar-btn"
+          class="right-tool-btn active"
+          title="Toggle Solar Lighting"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1" />
+          </svg>
         </button>
       </div>
+    </div>
 
-      <div class="hud-divider"></div>
+    <!-- Right collapsible telemetry & info drawer -->
+    <aside id="right-info-drawer" class="right-info-drawer" aria-label="Moon Info & Telemetry">
+      <div class="right-drawer-header">
+        <span>LUNAR TELEMETRY & INFO</span>
+        <button type="button" id="right-info-close-btn" class="ls-close-btn" title="Close Panel">✕</button>
+      </div>
 
-      <div id="camera-status">
-        <div class="data-row">
-          <span>Масштаб (Zoom):</span>
-          <span class="data-val" style="color: #ffd54f">1.00×</span>
+      <div class="right-drawer-scroll">
+        <section class="info-card">
+          <div class="panel-header">SURFACE TELEMETRY</div>
+          <div id="telemetry-content">Hover cursor over the lunar surface</div>
+        </section>
+
+        <section class="info-card">
+          <div class="panel-header">ORBIT & CAMERA</div>
+          <div id="camera-status">
+            <div class="data-row">
+              <span>Zoom Factor:</span>
+              <span class="data-val" style="color: #ffd54f">1.00×</span>
+            </div>
+            <div class="data-row">
+              <span>Orbit Altitude:</span>
+              <span class="data-val">— km</span>
+            </div>
+            <div class="data-row">
+              <span>Tile Level (LOD):</span>
+              <span class="data-val">Z2</span>
+            </div>
+            <div class="data-row">
+              <span>Resolution:</span>
+              <span class="data-val" style="color: #80deea">5330 m/px</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="info-card">
+          <div class="panel-header">EPHEMERIS (SUN & EARTH)</div>
+          <div id="solar-status">Initializing ephemeris...</div>
+        </section>
+
+        <section class="info-card">
+          <div class="panel-header">ACTIVE MISSION</div>
+          <div id="right-mission-summary" class="right-mission-summary">—</div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- Bottom dock: live readout strip + timeline + scale bar -->
+    <div id="bottom-dock" class="bottom-hud-dock">
+      <div class="bottom-top-row">
+        <div class="bottom-telemetry-strip">
+          <div id="bts-status-icon" class="bts-status-icon" title="Ephemeris Status">◷</div>
+          <div class="bts-cells">
+            <div class="bts-cell">
+              <span class="bts-label">LAT</span>
+              <span id="bts-lat" class="bts-value">—</span>
+            </div>
+            <div class="bts-cell">
+              <span class="bts-label">LON</span>
+              <span id="bts-lon" class="bts-value">—</span>
+            </div>
+            <div class="bts-cell">
+              <span class="bts-label">ILLUMINATION</span>
+              <span id="bts-illum" class="bts-value">—</span>
+            </div>
+            <div class="bts-cell">
+              <span class="bts-label">RES</span>
+              <span id="bts-res" class="bts-value">5330 m/px</span>
+            </div>
+            <div class="bts-cell">
+              <span class="bts-label">ORBIT ALT</span>
+              <span id="bts-alt" class="bts-value">— km</span>
+            </div>
+          </div>
+          <div class="bts-actions">
+            <button type="button" id="bts-home-btn" class="bts-icon-btn" title="Reset Camera View">⌂</button>
+            <button type="button" id="bts-solar-btn" class="bts-icon-btn active" title="Toggle Solar Illumination">☀</button>
+            <button type="button" id="bts-info-btn" class="bts-icon-btn" title="Open Detailed Moon Telemetry">
+              <span>ℹ Info</span>
+            </button>
+          </div>
         </div>
-        <div class="data-row">
-          <span>Висота орбіти:</span>
-          <span class="data-val">— км</span>
-        </div>
-        <div class="data-row">
-          <span>Рівень тайлів (LOD):</span>
-          <span class="data-val">Z2</span>
-        </div>
-        <div class="data-row">
-          <span>Роздільна здатність:</span>
-          <span class="data-val" style="color: #80deea">5330 м/піксель</span>
+
+        <div id="scale-bar-container">
+          <span id="scale-label" class="scale-label">500 km</span>
+          <div id="scale-line" class="scale-line"></div>
         </div>
       </div>
 
-      <div class="hud-divider"></div>
-
-      <div id="solar-status">Ініціалізація ефемерид...</div>
-    </div>
-
-    <!-- Права верхня панель телеметрії поверхні -->
-    <div id="telemetry-panel" class="hud-panel">
-      <div class="panel-header">ТЕЛЕМЕТРІЯ ПОВЕРХНІ</div>
-      <div id="telemetry-content">Наведіть курсор на поверхню Місяця</div>
-    </div>
-
-    <!-- Права нижня масштабна лінійка -->
-    <div id="scale-bar-container">
-      <span id="scale-label" class="scale-label">500 км</span>
-      <div id="scale-line" class="scale-line"></div>
+      <div id="timeline-mount"></div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

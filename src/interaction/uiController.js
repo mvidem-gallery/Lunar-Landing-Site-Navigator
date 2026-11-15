@@ -1,66 +1,391 @@
+import * as THREE from 'three';
 import { LOD_CONFIG, MAP_LAYERS, MOON_CONFIG } from '../config/constants.js';
+
+const TAB_TITLES = {
+  missions: { title: 'Mission', badge: 'MISSION' },
+  sites: { title: 'Landing Sites', badge: 'CATALOG' },
+  layers: { title: 'Map Layers', badge: 'LAYERS' },
+};
+
+const LAYER_DESCRIPTIONS = {
+  LRO_WAC_LOCAL: {
+    title: 'LRO WAC (Z2–Z8) + Kaguya TC (Z9–Z12)',
+    desc: 'Local LRO WAC base tiles (up to 83 m/px) with automatic transition to Kaguya TC Ortho 4096ppd (NASA Moon Trek / USGS WMS) when zooming in.',
+  },
+  KAGUYA_TC_GLOBAL: {
+    title: 'Kaguya TC Ortho 4096ppd (Z2–Z12)',
+    desc: 'High-resolution global orthophoto mosaic from the SELENE/Kaguya Terrain Camera.',
+  },
+};
 
 export class UIController {
   constructor() {
-    this.datePicker = document.getElementById('date-picker');
-    this.nowBtn = document.getElementById('now-btn');
+    this.leftDock = document.getElementById('left-dock');
+    this.leftCollapseBtn = document.getElementById('left-collapse-btn');
+    this.leftDrawerTitle = document.getElementById('left-drawer-title');
+    this.leftDrawerBadge = document.getElementById('left-drawer-badge');
+    this.railTabBtns = Array.from(document.querySelectorAll('[data-rail-tab]'));
+    this.tabPanes = {
+      missions: document.getElementById('tab-missions'),
+      sites: document.getElementById('tab-sites'),
+      layers: document.getElementById('tab-layers'),
+    };
+
+    this.topFloatingBar = document.getElementById('top-floating-bar');
+    this.topMissionPill = document.getElementById('top-mission-pill');
+    this.bottomDock = document.getElementById('bottom-dock');
+
+    // Пошук
+    this.searchInput = document.getElementById('global-search-input');
+    this.searchClearBtn = document.getElementById('global-search-clear');
+    this.searchResultsEl = document.getElementById('global-search-results');
+
+    // Шари та оверлеї
     this.layerSelector = document.getElementById('layer-selector');
+    this.activeLayerNameEl = document.getElementById('active-layer-name');
+    this.activeLayerDescEl = document.getElementById('active-layer-desc');
     this.toggleEarthDisk = document.getElementById('toggle-earth-disk');
     this.toggleSolarLighting = document.getElementById('toggle-solar-lighting');
+    this.toggleHeatmap = document.getElementById('toggle-illumination-heatmap');
+    this.toggleCoordGrid = document.getElementById('toggle-coord-grid');
+    this.heatmapLegend = document.getElementById('heatmap-legend');
+
+    this.overlaysCollapseBtn = document.getElementById('overlays-collapse-btn');
+    this.overlaysBody = document.getElementById('overlays-body');
+    this.overlayChips = {
+      grid: document.querySelector('[data-overlay-toggle="grid"]'),
+      solar: document.querySelector('[data-overlay-toggle="solar"]'),
+      heatmap: document.querySelector('[data-overlay-toggle="heatmap"]'),
+      earth: document.querySelector('[data-overlay-toggle="earth"]'),
+    };
+
+    // Права панель та швидкі кнопки
+    this.rightInfoToggleBtn = document.getElementById('right-info-toggle-btn');
+    this.rightInfoCloseBtn = document.getElementById('right-info-close-btn');
+    this.btsInfoBtn = document.getElementById('bts-info-btn');
+    this.homeViewBtn = document.getElementById('home-view-btn');
+    this.btsHomeBtn = document.getElementById('bts-home-btn');
+    this.quickSolarBtn = document.getElementById('quick-solar-btn');
+    this.btsSolarBtn = document.getElementById('bts-solar-btn');
+    this.railRulerBtn = document.getElementById('rail-ruler-btn');
+    this.rightRulerBtn = document.getElementById('ruler-toggle-btn');
+
+    // Телеметрія (права панель + нижня стрічка)
     this.cameraStatus = document.getElementById('camera-status');
     this.solarStatus = document.getElementById('solar-status');
     this.telemetryContent = document.getElementById('telemetry-content');
+    this.rightMissionSummary = document.getElementById('right-mission-summary');
+
+    this.btsStatusIcon = document.getElementById('bts-status-icon');
+    this.btsLat = document.getElementById('bts-lat');
+    this.btsLon = document.getElementById('bts-lon');
+    this.btsIllum = document.getElementById('bts-illum');
+    this.btsRes = document.getElementById('bts-res');
+    this.btsAlt = document.getElementById('bts-alt');
+
     this.scaleLabel = document.getElementById('scale-label');
     this.scaleLine = document.getElementById('scale-line');
 
-    this.dateChangeCallback = null;
+    this.compassNeedleEl = document.getElementById('compass-needle');
+    this.compassSunDotEl = document.getElementById('compass-sun-dot');
+
     this.layerChangeCallback = null;
     this.diskToggleCallback = null;
     this.lightingToggleCallback = null;
-    this.setPickerToDate(new Date());
+    this.heatmapToggleCallback = null;
+    this.coordGridToggleCallback = null;
+    this.homeCallback = null;
+    this.flyToCallback = null;
+    this.searchProvider = null;
 
-    this.datePicker.addEventListener('change', () => {
-      if (this.datePicker.value && this.dateChangeCallback) {
-        const utcDate = new Date(this.datePicker.value + 'Z');
-        this.dateChangeCallback(utcDate);
-      }
+    this._isRightDrawerOpen = false;
+    this._isLeftCollapsed = false;
+    this._activeLeftTab = 'missions';
+    this._camFwd = new THREE.Vector3();
+    this._camRight = new THREE.Vector3();
+    this._camUp = new THREE.Vector3();
+    this._northTangent = new THREE.Vector3();
+
+    this._bindEvents();
+    this._syncLayerInfo(LOD_CONFIG.DEFAULT_LAYER);
+  }
+
+  _bindEvents() {
+    this.railTabBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.railTab;
+        if (this._isLeftCollapsed) {
+          this.setLeftCollapsed(false);
+        }
+        this.setLeftTab(tab);
+      });
     });
 
-    this.nowBtn.addEventListener('click', () => {
-      const now = new Date();
-      this.setPickerToDate(now);
-      if (this.dateChangeCallback) this.dateChangeCallback(now);
-    });
+    if (this.leftCollapseBtn) {
+      this.leftCollapseBtn.addEventListener('click', () => {
+        this.setLeftCollapsed(!this._isLeftCollapsed);
+      });
+    }
 
-    this.layerSelector.addEventListener('change', (e) => {
-      if (this.layerChangeCallback) {
-        this.layerChangeCallback(e.target.value);
-      }
-    });
-
-    this.toggleEarthDisk.addEventListener('change', (e) => {
-      if (this.diskToggleCallback) {
-        this.diskToggleCallback(e.target.checked);
-      }
-    });
-
-    this.toggleSolarLighting.addEventListener('change', (e) => {
-      if (this.lightingToggleCallback) {
-        this.lightingToggleCallback(e.target.checked);
-      }
-    });
+    if (this.overlaysCollapseBtn && this.overlaysBody) {
+      this.overlaysCollapseBtn.addEventListener('click', () => {
+        const collapsed = this.overlaysBody.classList.toggle('collapsed');
+        const label = this.overlaysCollapseBtn.querySelector('span:first-child');
+        if (label) {
+          label.textContent = collapsed ? '▸ Map Overlays' : '▾ Map Overlays';
+        }
+      });
+    }
 
     if (this.layerSelector) {
       this.layerSelector.value = LOD_CONFIG.DEFAULT_LAYER;
+      this.layerSelector.addEventListener('change', (e) => {
+        this._syncLayerInfo(e.target.value);
+        if (this.layerChangeCallback) {
+          this.layerChangeCallback(e.target.value);
+        }
+      });
     }
+
+    // Синхронізація чекбоксів (вкладка Layers) та чіпів (Map Overlays)
+    const setSolar = (enabled) => {
+      if (this.toggleSolarLighting) this.toggleSolarLighting.checked = enabled;
+      if (this.overlayChips.solar) this.overlayChips.solar.classList.toggle('active', enabled);
+      if (this.quickSolarBtn) this.quickSolarBtn.classList.toggle('active', enabled);
+      if (this.btsSolarBtn) this.btsSolarBtn.classList.toggle('active', enabled);
+      if (this.lightingToggleCallback) this.lightingToggleCallback(enabled);
+    };
+
+    const setEarthDisk = (enabled) => {
+      if (this.toggleEarthDisk) this.toggleEarthDisk.checked = enabled;
+      if (this.overlayChips.earth) this.overlayChips.earth.classList.toggle('active', enabled);
+      if (this.diskToggleCallback) this.diskToggleCallback(enabled);
+    };
+
+    const setHeatmap = (enabled) => {
+      if (this.toggleHeatmap) this.toggleHeatmap.checked = enabled;
+      if (this.overlayChips.heatmap) this.overlayChips.heatmap.classList.toggle('active', enabled);
+      if (this.heatmapLegend) this.heatmapLegend.style.display = enabled ? 'block' : 'none';
+      if (this.heatmapToggleCallback) this.heatmapToggleCallback(enabled);
+    };
+
+    const setCoordGrid = (enabled) => {
+      if (this.toggleCoordGrid) this.toggleCoordGrid.checked = enabled;
+      if (this.overlayChips.grid) this.overlayChips.grid.classList.toggle('active', enabled);
+      if (this.coordGridToggleCallback) this.coordGridToggleCallback(enabled);
+    };
+
+    this.toggleSolarLighting?.addEventListener('change', (e) => setSolar(e.target.checked));
+    this.overlayChips.solar?.addEventListener('click', () => setSolar(!this.toggleSolarLighting.checked));
+    this.quickSolarBtn?.addEventListener('click', () => setSolar(!this.toggleSolarLighting.checked));
+    this.btsSolarBtn?.addEventListener('click', () => setSolar(!this.toggleSolarLighting.checked));
+
+    this.toggleEarthDisk?.addEventListener('change', (e) => setEarthDisk(e.target.checked));
+    this.overlayChips.earth?.addEventListener('click', () => setEarthDisk(!this.toggleEarthDisk.checked));
+
+    this.toggleHeatmap?.addEventListener('change', (e) => setHeatmap(e.target.checked));
+    this.overlayChips.heatmap?.addEventListener('click', () => setHeatmap(!this.toggleHeatmap.checked));
+
+    this.toggleCoordGrid?.addEventListener('change', (e) => setCoordGrid(e.target.checked));
+    this.overlayChips.grid?.addEventListener('click', () => setCoordGrid(!this.toggleCoordGrid.checked));
+
+    // Права панель інформації
+    this.rightInfoToggleBtn?.addEventListener('click', () => this.toggleRightDrawer());
+    this.btsInfoBtn?.addEventListener('click', () => this.toggleRightDrawer());
+    this.rightInfoCloseBtn?.addEventListener('click', () => this.setRightDrawerOpen(false));
+
+    // Кнопка Home
+    this.homeViewBtn?.addEventListener('click', () => this.homeCallback?.());
+    this.btsHomeBtn?.addEventListener('click', () => this.homeCallback?.());
+
+    // Клавіша I для відкриття/закриття правої панелі інформації
+    window.addEventListener('keydown', (e) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if (e.code === 'KeyI' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        this.toggleRightDrawer();
+      }
+    });
+
+    // Глобальний пошук координат і точок
+    this._bindSearchEvents();
   }
 
-  setPickerToDate(date) {
-    this.datePicker.value = date.toISOString().slice(0, 16);
+  _bindSearchEvents() {
+    if (!this.searchInput) return;
+
+    const closeResults = () => {
+      this.searchResultsEl?.classList.remove('open');
+    };
+
+    const parseLatLon = (raw) => {
+      const cleaned = raw.trim().replace(/°/g, '');
+      const match = cleaned.match(
+        /^(-?\d+(?:\.\d+)?)\s*([NSns])?[\s,;]+(-?\d+(?:\.\d+)?)\s*([EWew])?$/
+      );
+      if (!match) return null;
+      let lat = Number.parseFloat(match[1]);
+      let lon = Number.parseFloat(match[3]);
+      if (match[2] && match[2].toUpperCase() === 'S') lat = -Math.abs(lat);
+      if (match[4] && match[4].toUpperCase() === 'W') lon = -Math.abs(lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        return null;
+      }
+      return { lat, lon };
+    };
+
+    const renderResults = () => {
+      const q = this.searchInput.value.trim();
+      this.searchClearBtn?.classList.toggle('visible', q.length > 0);
+      if (!q) {
+        closeResults();
+        return;
+      }
+
+      const items = [];
+      const coords = parseLatLon(q);
+      if (coords) {
+        items.push({
+          name: 'Go to coordinates',
+          lat: coords.lat,
+          lon: coords.lon,
+          zoom: 55,
+          isDirectCoord: true,
+        });
+      }
+
+      if (typeof this.searchProvider === 'function') {
+        const lower = q.toLowerCase();
+        const catalog = this.searchProvider() || [];
+        for (const entry of catalog) {
+          if (
+            entry.name?.toLowerCase().includes(lower) ||
+            entry.region?.toLowerCase().includes(lower) ||
+            entry.program?.toLowerCase().includes(lower)
+          ) {
+            items.push({
+              name: entry.name,
+              lat: entry.lat,
+              lon: entry.lon,
+              zoom: entry.status === 'planned' ? 45 : 65,
+            });
+          }
+          if (items.length >= 12) break;
+        }
+      }
+
+      if (items.length === 0) {
+        closeResults();
+        return;
+      }
+
+      const esc = UIController.escapeHtml;
+      this.searchResultsEl.innerHTML = items
+        .map(
+          (item, idx) => `
+          <div class="search-result-item" data-search-idx="${idx}">
+            <span class="search-result-name">${item.isDirectCoord ? '⌖ ' : ''}${esc(item.name)}</span>
+            <span class="search-result-coords">${item.lat.toFixed(2)}°, ${item.lon.toFixed(2)}°</span>
+          </div>
+        `
+        )
+        .join('');
+
+      this._lastSearchItems = items;
+      this.searchResultsEl.classList.add('open');
+    };
+
+    this.searchInput.addEventListener('input', renderResults);
+    this.searchInput.addEventListener('focus', renderResults);
+    this.searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const coords = parseLatLon(this.searchInput.value);
+        if (coords && this.flyToCallback) {
+          this.flyToCallback(coords.lat, coords.lon, 55);
+          closeResults();
+        } else if (this._lastSearchItems && this._lastSearchItems.length > 0 && this.flyToCallback) {
+          const first = this._lastSearchItems[0];
+          this.flyToCallback(first.lat, first.lon, first.zoom || 60);
+          closeResults();
+        }
+      } else if (e.key === 'Escape') {
+        closeResults();
+        this.searchInput.blur();
+      }
+    });
+
+    this.searchResultsEl?.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-search-idx]');
+      if (!row || !this._lastSearchItems) return;
+      const item = this._lastSearchItems[Number(row.dataset.searchIdx)];
+      if (item && this.flyToCallback) {
+        this.flyToCallback(item.lat, item.lon, item.zoom || 60);
+        closeResults();
+      }
+    });
+
+    this.searchClearBtn?.addEventListener('click', () => {
+      this.searchInput.value = '';
+      this.searchClearBtn.classList.remove('visible');
+      closeResults();
+      this.searchInput.focus();
+    });
+
+    window.addEventListener('pointerdown', (e) => {
+      if (!this.searchInput.contains(e.target) && !this.searchResultsEl?.contains(e.target)) {
+        closeResults();
+      }
+    });
   }
 
-  onDateChange(callback) {
-    this.dateChangeCallback = callback;
+  setLeftTab(tabName) {
+    if (!this.tabPanes[tabName]) return;
+    this._activeLeftTab = tabName;
+
+    this.railTabBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.railTab === tabName);
+    });
+    Object.entries(this.tabPanes).forEach(([key, pane]) => {
+      pane?.classList.toggle('active', key === tabName);
+    });
+
+    const meta = TAB_TITLES[tabName] || { title: 'Panel', badge: '' };
+    if (this.leftDrawerTitle) this.leftDrawerTitle.textContent = meta.title;
+    if (this.leftDrawerBadge) this.leftDrawerBadge.textContent = meta.badge;
+  }
+
+  setLeftCollapsed(collapsed) {
+    this._isLeftCollapsed = Boolean(collapsed);
+    this.leftDock?.classList.toggle('collapsed', this._isLeftCollapsed);
+    this.bottomDock?.classList.toggle('left-collapsed', this._isLeftCollapsed);
+    this.topFloatingBar?.classList.toggle('left-collapsed', this._isLeftCollapsed);
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  toggleRightDrawer() {
+    this.setRightDrawerOpen(!this._isRightDrawerOpen);
+  }
+
+  setRightDrawerOpen(open) {
+    this._isRightDrawerOpen = Boolean(open);
+    document.body.classList.toggle('right-drawer-open', this._isRightDrawerOpen);
+    this.rightInfoToggleBtn?.classList.toggle('active', this._isRightDrawerOpen);
+    this.btsInfoBtn?.classList.toggle('active', this._isRightDrawerOpen);
+  }
+
+  setRulerActiveUI(isActive) {
+    this.railRulerBtn?.classList.toggle('active', isActive);
+    this.rightRulerBtn?.classList.toggle('active', isActive);
+  }
+
+  _syncLayerInfo(layerId) {
+    const info = LAYER_DESCRIPTIONS[layerId];
+    if (info && this.activeLayerNameEl && this.activeLayerDescEl) {
+      this.activeLayerNameEl.textContent = info.title;
+      this.activeLayerDescEl.textContent = info.desc;
+    }
   }
 
   onLayerChange(callback) {
@@ -76,30 +401,80 @@ export class UIController {
   }
 
   onToggleIlluminationHeatmap(callback) {
-    const checkbox = document.getElementById('toggle-illumination-heatmap');
-    const legend = document.getElementById('heatmap-legend');
-    if (checkbox) {
-      checkbox.addEventListener('change', (e) => {
-        if (legend) {
-          legend.style.display = e.target.checked ? 'block' : 'none';
-        }
-        callback(e.target.checked);
-      });
-    }
+    this.heatmapToggleCallback = callback;
   }
 
   onToggleCoordGrid(callback) {
-    const checkbox = document.getElementById('toggle-coord-grid');
-    if (checkbox) {
-      checkbox.addEventListener('change', (e) => {
-        callback(e.target.checked);
-      });
-    }
+    this.coordGridToggleCallback = callback;
+  }
+
+  onHomeClick(callback) {
+    this.homeCallback = callback;
+  }
+
+  onFlyToSearch(callback) {
+    this.flyToCallback = callback;
+  }
+
+  setSearchProvider(providerFn) {
+    this.searchProvider = providerFn;
   }
 
   setLoading(isLoading) {
-    if (isLoading) {
-      this.solarStatus.innerHTML = 'Запит ефемерид JPL Horizons...';
+    if (this.btsStatusIcon) {
+      this.btsStatusIcon.classList.toggle('loading', Boolean(isLoading));
+    }
+    if (isLoading && this.solarStatus) {
+      this.solarStatus.innerHTML = 'Querying JPL Horizons ephemeris...';
+    }
+  }
+
+  updateMissionSummary(mission) {
+    if (!mission) return;
+    if (this.topMissionPill) {
+      this.topMissionPill.textContent = `🎯 ${mission.name}`;
+      this.topMissionPill.title = `Active Mission: ${mission.name}`;
+    }
+    if (this.rightMissionSummary) {
+      this.rightMissionSummary.innerHTML = `
+        <div class="data-row"><span>Name:</span> <span class="data-val">${UIController.escapeHtml(mission.name)}</span></div>
+        <div class="data-row"><span>Saved Points:</span> <span class="data-val" style="color:#4fc3f7">${mission.points.length}</span></div>
+        <div class="data-row"><span>Ruler Measurements:</span> <span class="data-val" style="color:#6ef3e6">${mission.measurements.length}</span></div>
+      `;
+    }
+  }
+
+  static escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  updateCompass(camera, sunDir) {
+    if (!camera || !this.compassNeedleEl) return;
+    camera.getWorldDirection(this._camFwd);
+    this._camRight.crossVectors(this._camFwd, camera.up).normalize();
+    this._camUp.crossVectors(this._camRight, this._camFwd).normalize();
+
+    // Проєктуємо вісь +Y (Північ Місяця) на площину екрана камери
+    const worldNorth = this._northTangent.set(0, 1, 0);
+    const nx = worldNorth.dot(this._camRight);
+    const ny = worldNorth.dot(this._camUp);
+    const angleRad = Math.atan2(nx, ny);
+    const angleDeg = THREE.MathUtils.radToDeg(angleRad);
+    this.compassNeedleEl.style.transform = `rotate(${angleDeg.toFixed(1)}deg)`;
+
+    if (sunDir && this.compassSunDotEl) {
+      const sx = sunDir.dot(this._camRight);
+      const sy = sunDir.dot(this._camUp);
+      const len = Math.hypot(sx, sy) || 1;
+      const r = 17;
+      const px = (sx / len) * r;
+      const py = -(sy / len) * r;
+      this.compassSunDotEl.style.transform = `translate(calc(-50% + ${px.toFixed(1)}px), calc(-50% + ${py.toFixed(1)}px))`;
     }
   }
 
@@ -110,7 +485,6 @@ export class UIController {
     const currentLayerId = this.layerSelector ? this.layerSelector.value : LOD_CONFIG.DEFAULT_LAYER;
     const layer = MAP_LAYERS[currentLayerId];
 
-    // Перевіряємо, чи належить поточний рівень тайлу до WebMercator (2^z стовпців) або Plate Carrée (2^(z+1) стовпців)
     let isWebMercator = Boolean(layer && layer.isWebMercatorQuad);
     if (layer && Array.isArray(layer.overlays)) {
       const baseMax = layer.baseMaxZoom ?? layer.maxZoom ?? 8;
@@ -129,31 +503,34 @@ export class UIController {
     const metersPerPixel = circumferenceMeters / (cols * LOD_CONFIG.TILE_SIZE_PX);
 
     if (metersPerPixel >= 100) {
-      return `${Math.round(metersPerPixel)} м/піксель`;
+      return `${Math.round(metersPerPixel)} m/px`;
     }
     if (metersPerPixel >= 10) {
-      return `${metersPerPixel.toFixed(1)} м/піксель`;
+      return `${metersPerPixel.toFixed(1)} m/px`;
     }
-    return `${metersPerPixel.toFixed(2)} м/піксель`;
+    return `${metersPerPixel.toFixed(2)} m/px`;
   }
 
   updateCameraZoom({ zoomFactor, altitudeKm, kmPerPixel, estimatedLod }) {
-    const formattedZoom = zoomFactor >= 10
-      ? `${zoomFactor.toFixed(1)}×`
-      : `${zoomFactor.toFixed(2)}×`;
-
-    const formattedAlt = altitudeKm >= 100
-      ? `${Math.round(altitudeKm)} км`
-      : `${altitudeKm.toFixed(1)} км`;
-
+    const formattedZoom = zoomFactor >= 10 ? `${zoomFactor.toFixed(1)}×` : `${zoomFactor.toFixed(2)}×`;
+    const formattedAlt = altitudeKm >= 100 ? `${Math.round(altitudeKm)} km` : `${altitudeKm.toFixed(1)} km`;
     const resolutionText = this._calculateTileResolutionMetersPerPixel(estimatedLod);
 
-    this.cameraStatus.innerHTML = `
-      <div class="data-row"><span>Масштаб (Zoom):</span> <span class="data-val" style="color:#ffd54f">${formattedZoom}</span></div>
-      <div class="data-row"><span>Висота орбіти:</span> <span class="data-val">${formattedAlt}</span></div>
-      <div class="data-row"><span>Рівень тайлів (LOD):</span> <span class="data-val">Z${estimatedLod}</span></div>
-      <div class="data-row"><span>Роздільна здатність:</span> <span class="data-val" style="color:#80deea">${resolutionText}</span></div>
-    `;
+    if (this.cameraStatus) {
+      this.cameraStatus.innerHTML = `
+        <div class="data-row"><span>Zoom:</span> <span class="data-val" style="color:#ffd54f">${formattedZoom}</span></div>
+        <div class="data-row"><span>Orbit Altitude:</span> <span class="data-val">${formattedAlt}</span></div>
+        <div class="data-row"><span>Tile Level (LOD):</span> <span class="data-val">Z${estimatedLod}</span></div>
+        <div class="data-row"><span>Resolution:</span> <span class="data-val" style="color:#80deea">${resolutionText}</span></div>
+      `;
+    }
+
+    if (this.btsRes) {
+      this.btsRes.textContent = resolutionText;
+    }
+    if (this.btsAlt) {
+      this.btsAlt.textContent = formattedAlt;
+    }
 
     if (kmPerPixel && this.scaleLabel && this.scaleLine) {
       this.updateScaleBar(kmPerPixel);
@@ -161,7 +538,7 @@ export class UIController {
   }
 
   updateScaleBar(kmPerPixel) {
-    const targetWidthPx = 130;
+    const targetWidthPx = 120;
     const rawKm = kmPerPixel * targetWidthPx;
 
     const magnitude = Math.pow(10, Math.floor(Math.log10(rawKm)));
@@ -180,9 +557,9 @@ export class UIController {
     this.scaleLine.style.width = `${actualWidthPx}px`;
 
     if (niceKm >= 1) {
-      this.scaleLabel.textContent = `${niceKm >= 10 ? Math.round(niceKm) : niceKm.toFixed(1)} км`;
+      this.scaleLabel.textContent = `${niceKm >= 10 ? Math.round(niceKm) : niceKm.toFixed(1)} km`;
     } else {
-      this.scaleLabel.textContent = `${Math.round(niceKm * 1000)} м`;
+      this.scaleLabel.textContent = `${Math.round(niceKm * 1000)} m`;
     }
   }
 
@@ -192,32 +569,55 @@ export class UIController {
     const eLonDir = data.subEarthLon >= 0 ? 'E' : 'W';
     const eLatDir = data.subEarthLat >= 0 ? 'N' : 'S';
 
-    this.solarStatus.innerHTML = `
-      <div class="data-row"><span>Джерело:</span> <span class="data-val">${data.source}</span></div>
-      <div class="data-row"><span>Субсонячна точка:</span> <span class="data-val">${Math.abs(data.subSolarLat).toFixed(2)}°${sLatDir}, ${Math.abs(data.subSolarLon).toFixed(2)}°${sLonDir}</span></div>
-      <div class="data-row"><span>Центр диска (Земля):</span> <span class="data-val" style="color:#4fc3f7">${Math.abs(data.subEarthLat).toFixed(2)}°${eLatDir}, ${Math.abs(data.subEarthLon).toFixed(2)}°${eLonDir}</span></div>
-    `;
+    if (this.solarStatus) {
+      this.solarStatus.innerHTML = `
+        <div class="data-row"><span>Source:</span> <span class="data-val">${data.source}</span></div>
+        <div class="data-row"><span>Subsolar Point:</span> <span class="data-val">${Math.abs(data.subSolarLat).toFixed(2)}°${sLatDir}, ${Math.abs(data.subSolarLon).toFixed(2)}°${sLonDir}</span></div>
+        <div class="data-row"><span>Sub-Earth Point:</span> <span class="data-val" style="color:#4fc3f7">${Math.abs(data.subEarthLat).toFixed(2)}°${eLatDir}, ${Math.abs(data.subEarthLon).toFixed(2)}°${eLonDir}</span></div>
+      `;
+    }
+
+    if (this.btsStatusIcon) {
+      this.btsStatusIcon.title = `Ephemeris source: ${data.source}`;
+    }
   }
 
   updateCursorTelemetry(data) {
     if (!data) {
-      this.telemetryContent.innerHTML = 'Наведіть курсор на поверхню Місяця';
+      if (this.telemetryContent) {
+        this.telemetryContent.innerHTML = 'Hover cursor over the lunar surface';
+      }
+      if (this.btsLat) this.btsLat.textContent = '—';
+      if (this.btsLon) this.btsLon.textContent = '—';
+      if (this.btsIllum) this.btsIllum.textContent = '—';
       return;
     }
 
     const latDir = data.lat >= 0 ? 'N' : 'S';
     const lonDir = data.lon >= 0 ? 'E' : 'W';
-    const statusText = data.isDaylight ? 'День (Освітлено)' : 'Ніч (За термінатором)';
-    const visibilityText = data.isVisibleFromEarth ? 'Видима із Землі' : 'Зворотний бік (Невидима)';
+    const statusText = data.isDaylight ? 'Day (Illuminated)' : 'Night (Beyond Terminator)';
+    const visibilityText = data.isVisibleFromEarth ? 'Visible from Earth' : 'Far Side (Hidden)';
 
-    this.telemetryContent.innerHTML = `
-      <div class="data-row"><span>Широта:</span> <span class="data-val">${Math.abs(data.lat).toFixed(4)}° ${latDir}</span></div>
-      <div class="data-row"><span>Довгота:</span> <span class="data-val">${Math.abs(data.lon).toFixed(4)}° ${lonDir}</span></div>
-      <div class="data-row"><span>Видимість:</span> <span class="data-val" style="color:${data.isVisibleFromEarth ? '#4fc3f7' : '#90a4ae'}">${visibilityText}</span></div>
-      <div class="data-row"><span>Освітлення:</span> <span class="data-val">${statusText}</span></div>
-      <div class="data-row"><span>Висота Сонця:</span> <span class="data-val">${data.solarElevationDeg.toFixed(2)}°</span></div>
-      <div class="data-row"><span>Освітленість:</span> <span class="data-val">${data.illuminationPercent.toFixed(1)}%</span></div>
-      <div class="data-row"><span>Інсоляція:</span> <span class="data-val">${data.irradianceWm2.toFixed(1)} Вт/м²</span></div>
-    `;
+    if (this.btsLat) {
+      this.btsLat.textContent = `${Math.abs(data.lat).toFixed(4)}°${latDir}`;
+    }
+    if (this.btsLon) {
+      this.btsLon.textContent = `${Math.abs(data.lon).toFixed(4)}°${lonDir}`;
+    }
+    if (this.btsIllum) {
+      this.btsIllum.textContent = `${data.illuminationPercent.toFixed(0)}% (${data.solarElevationDeg >= 0 ? '+' : ''}${data.solarElevationDeg.toFixed(1)}°)`;
+    }
+
+    if (this.telemetryContent) {
+      this.telemetryContent.innerHTML = `
+        <div class="data-row"><span>Latitude:</span> <span class="data-val">${Math.abs(data.lat).toFixed(4)}° ${latDir}</span></div>
+        <div class="data-row"><span>Longitude:</span> <span class="data-val">${Math.abs(data.lon).toFixed(4)}° ${lonDir}</span></div>
+        <div class="data-row"><span>Visibility:</span> <span class="data-val" style="color:${data.isVisibleFromEarth ? '#4fc3f7' : '#90a4ae'}">${visibilityText}</span></div>
+        <div class="data-row"><span>Lighting:</span> <span class="data-val">${statusText}</span></div>
+        <div class="data-row"><span>Solar Elevation:</span> <span class="data-val">${data.solarElevationDeg.toFixed(2)}°</span></div>
+        <div class="data-row"><span>Illumination:</span> <span class="data-val">${data.illuminationPercent.toFixed(1)}%</span></div>
+        <div class="data-row"><span>Irradiance:</span> <span class="data-val">${data.irradianceWm2.toFixed(1)} W/m²</span></div>
+      `;
+    }
   }
 }
