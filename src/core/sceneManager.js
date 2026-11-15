@@ -15,7 +15,7 @@ export class SceneManager {
       45,
       window.innerWidth / window.innerHeight,
       0.000005,
-      2000
+      6000
     );
     this.camera.position.set(this.initialDistance, 0, 0);
 
@@ -150,7 +150,7 @@ export class SceneManager {
       if (this._cislunarFigure) {
         this.cislunarTarget.copy(this._cislunarFigure.center);
         frameD = Math.max(D, this._cislunarFigure.radius * 1.45);
-        this.minCislunarDistance = Math.max(6.5, this._cislunarFigure.radius * 0.6);
+        this.minCislunarDistance = Math.max(6.5, this._cislunarFigure.radius * 0.12);
         this.maxCislunarDistance = Math.max(38.0, this._cislunarFigure.radius * 3.8);
       } else {
         const rE = EARTH_CONFIG.RADIUS;
@@ -203,6 +203,22 @@ export class SceneManager {
   _normalizeCislunarFocus(focus) {
     if (focus === 'EARTH' || focus === 'MOON') return focus;
     return 'SYSTEM';
+  }
+
+  setCislunarDistance(distance) {
+    if (!Number.isFinite(distance) || distance <= 1) return;
+    this.cislunarDistance = distance;
+    if (!this._cislunarFigure) {
+      this._earthCenter.copy(this.cislunarEarthDir).multiplyScalar(this.cislunarDistance);
+    }
+    this._updateCislunarFraming();
+    if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      this.minRadialDistance = this.minCislunarDistance;
+      this.maxRadialDistance = this.maxCislunarDistance;
+      this.controls.minDistance = this.minRadialDistance;
+      this.controls.maxDistance = this.maxRadialDistance;
+      this._desiredTarget.copy(this.cislunarTarget);
+    }
   }
 
   setEarthDirection(vec3) {

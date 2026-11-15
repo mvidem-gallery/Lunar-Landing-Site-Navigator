@@ -14,6 +14,7 @@ import { RulerTool } from './interaction/rulerTool.js';
 import { LandingSitesMenu } from './interaction/landingSitesMenu.js';
 import { MissionPanel } from './interaction/missionPanel.js';
 import { TimelineController } from './interaction/timelineController.js';
+import { AIReportPanel } from './interaction/aiReportPanel.js';
 import { LunarHorizonModal } from './lunar-horizon/lunarHorizonModal.js';
 import { loadTrajectoryDoc } from './data/trajectoryStorage.js';
 import { MAP_LAYERS, TRAJECTORY_CONFIG, VIEW_MODES } from './config/constants.js';
@@ -139,13 +140,14 @@ async function bootstrap() {
       }
     }
 
-    celestialEnv.onTrajectoryLoaded((info) => {
+    celestialEnv.onTrajectoryLoaded((info, meta = {}) => {
       uiController.updateTrajectoryInfo(info);
+      sceneManager.setCislunarDistance(celestialEnv.getActiveCislunarDistance());
       sceneManager.setCislunarFigure(celestialEnv.getCislunarFigure(), {
         animate:
           celestialEnv.viewMode === VIEW_MODES.CISLUNAR && sceneManager.getCislunarFocus() === 'SYSTEM',
       });
-      if (celestialEnv.viewMode === VIEW_MODES.CISLUNAR) {
+      if (celestialEnv.viewMode === VIEW_MODES.CISLUNAR && !meta?.preservePlayback) {
         if (info) {
           trajectorySpanMs = null;
           syncTimelineWithMode(VIEW_MODES.CISLUNAR, { resetToStart: true });
@@ -186,6 +188,20 @@ async function bootstrap() {
       celestialEnv.setTrajectoryDocument(jsonDoc);
     });
 
+    uiController.setSimpleTrajectoryUI(celestialEnv.isTrajectorySimpleMode());
+    uiController.onSimpleTrajectoryToggle((simple) => {
+      const prevFocus = sceneManager.getCislunarFocus();
+      celestialEnv.setTrajectorySimpleMode(simple);
+      sceneManager.setCislunarDistance(celestialEnv.getActiveCislunarDistance());
+      if (!simple && sceneManager.viewMode !== VIEW_MODES.CISLUNAR) {
+        setViewMode(VIEW_MODES.CISLUNAR, { focus: 'SYSTEM' });
+      } else if (celestialEnv.viewMode === VIEW_MODES.CISLUNAR) {
+        if (!celestialEnv.getTrajectoryInfo() || prevFocus !== 'SYSTEM') {
+          sceneManager.setCislunarFocus('SYSTEM', { animate: true });
+        }
+      }
+    });
+
     function setViewMode(mode, options = {}) {
       const normalized =
         mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
@@ -199,6 +215,7 @@ async function bootstrap() {
       if (normalized === VIEW_MODES.LUNAR && latestTimelineEphemData) {
         applyEphemerisToScene(latestTimelineEphemData, currentSimulationDate);
       }
+      sceneManager.setCislunarDistance(celestialEnv.getActiveCislunarDistance());
       sceneManager.setCislunarFigure(celestialEnv.getCislunarFigure(), { animate: false });
       sceneManager.setViewMode(normalized, options);
       uiController.setViewModeUI(normalized);
@@ -241,6 +258,7 @@ async function bootstrap() {
     }
 
     let missionPanel = null;
+    let aiReportPanel = null;
     let missionTrajectoryLoadSeq = 0;
     let currentLoadedTrajectoryKey = null;
 
@@ -299,6 +317,9 @@ async function bootstrap() {
           missionPanel.hydrateMissionTrajectoryInfo(mission.id, info, {
             syncDates: syncFromMeta,
             overwriteSiteIfUnset,
+          });
+          aiReportPanel?.onMissionChanged({
+            isTabOpen: uiController.getActiveLeftTab() === 'ai' && !uiController.isLeftCollapsed(),
           });
         }
       } catch (err) {
@@ -363,13 +384,17 @@ async function bootstrap() {
       },
       onActiveMissionChange: (mission, meta = {}) => {
         uiController.updateMissionSummary(mission);
-        if (meta.reason === 'switch') {
+        const isMissionActivation = meta.reason === 'switch' || meta.reason === 'create';
+        if (isMissionActivation) {
           applyMissionTrajectory(mission, {
-            syncFromMeta: meta.reason === 'init' && !mission?.trajectory?.meta,
+            jsonDoc: meta.generatedDoc || null,
+            syncFromMeta: !mission?.trajectory?.meta,
+            overwriteSiteIfUnset: meta.generatedDoc ? true : false,
+            forceReload: Boolean(meta.generatedDoc),
           });
         }
         if (
-          meta.reason === 'switch' &&
+          isMissionActivation &&
           mission?.flight?.landingDateIso &&
           sceneManager.viewMode !== VIEW_MODES.CISLUNAR &&
           timelineController
@@ -380,6 +405,9 @@ async function bootstrap() {
             timelineController.setDate(targetDate, true);
           }
         }
+        aiReportPanel?.onMissionChanged({
+          isTabOpen: uiController.getActiveLeftTab() === 'ai' && !uiController.isLeftCollapsed(),
+        });
       },
       onLoadMissionTrajectory: (mission, opts) => applyMissionTrajectory(mission, { ...opts, forceReload: true }),
       onSetTrajectoryVisible: (visible) => {
@@ -415,6 +443,24 @@ async function bootstrap() {
     });
 
     applyMissionTrajectory(missionPanel.getActiveMission(), { syncFromMeta: true });
+
+    aiReportPanel = new AIReportPanel({
+      container: document.getElementById('ai-report-slot'),
+      getActiveMission: () => missionPanel?.getActiveMission(),
+      getCurrentTimelineDate: () =>
+        celestialEnv.viewMode === VIEW_MODES.CISLUNAR && latestPhysicalState?.utcTimestampMs
+          ? new Date(latestPhysicalState.utcTimestampMs)
+          : currentSimulationDate,
+      onFlyTo: (lat, lon, zoom) => {
+        sceneManager.flyToCoordinates(lat, lon, zoom);
+      },
+    });
+
+    uiController.onLeftTabChange((tabName, { collapsed }) => {
+      if (!collapsed && tabName === 'ai') {
+        aiReportPanel?.onTabActivated();
+      }
+    });
 
     const landingSitesMenu = new LandingSitesMenu({
       scene: moonGroup,
@@ -579,6 +625,15 @@ async function bootstrap() {
         } else {
           sceneManager.setCislunarFocus(focus, { animate: true });
         }
+      },
+      onCreateMission: (targetData) => {
+        uiController.setLeftCollapsed(false);
+        uiController.setLeftTab('missions');
+        missionPanel.openNewMissionForm({
+          lat: targetData.lat,
+          lon: targetData.lon,
+          landingDateIso: targetData.isoDate || currentSimulationDate?.toISOString() || null,
+        });
       },
       onSetMissionTarget: (targetData) => {
         missionPanel.setActiveLandingSite({

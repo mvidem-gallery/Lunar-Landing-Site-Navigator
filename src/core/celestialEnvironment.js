@@ -171,6 +171,7 @@ export class CelestialEnvironment {
     this._generatedTrajectory = null;
     this._trajectoryUserVisible = true;
     this._trajectoryDirty = false;
+    this._simpleTrajectoryMode = true;
     this._onTrajectoryLoadedCallback = null;
     this._externalTelemetryTickCallback = null;
     this._onPhysicalStateChangeCallback = null;
@@ -207,15 +208,62 @@ export class CelestialEnvironment {
     return this.viewMode === VIEW_MODES.CISLUNAR && Boolean(this._parsedTrajectory);
   }
 
+  getActiveCislunarDistance() {
+    if (this._simpleTrajectoryMode) {
+      return EARTH_CONFIG.CISLUNAR_DISTANCE;
+    }
+    if (this._parsedTrajectory) {
+      return TrajectoryGenerator.getNaturalCislunarDistance(
+        this._parsedTrajectory,
+        MOON_CONFIG.RADIUS
+      );
+    }
+    return this._currentEarthDistance || this.earthDistance;
+  }
+
+  isTrajectorySimpleMode() {
+    return this._simpleTrajectoryMode;
+  }
+
+  setTrajectorySimpleMode(simple) {
+    const next = Boolean(simple);
+    if (this._simpleTrajectoryMode === next) {
+      return this._simpleTrajectoryMode;
+    }
+    this._simpleTrajectoryMode = next;
+    this.cislunarEarthDistance = this.getActiveCislunarDistance();
+    if (this._parsedTrajectory) {
+      this._trajectoryDirty = true;
+      this._rebuildTrajectoryIfNeeded({ preserveTime: true });
+    }
+    this._syncEarthState();
+    if (this._parsedTrajectory) {
+      this._onTrajectoryLoadedCallback?.(this.getTrajectoryInfo(), { preservePlayback: true });
+    }
+    return this._simpleTrajectoryMode;
+  }
+
+  _syncSunPositionAndScale() {
+    const activeDist = this.getActiveCislunarDistance();
+    const effectiveSunDist =
+      this.viewMode === VIEW_MODES.CISLUNAR && !this._simpleTrajectoryMode
+        ? Math.max(this.sunDistance, activeDist * 3.0)
+        : this.sunDistance;
+    this.sunGroup.position.copy(this._sunDir).multiplyScalar(effectiveSunDist);
+    this.sunGroup.scale.setScalar(effectiveSunDist / this.sunDistance);
+  }
+
   _applyCislunarPhysicalStateAtTime(t_s) {
     if (!this._parsedTrajectory) return null;
 
+    const cislunarDist = this.getActiveCislunarDistance();
+    this.cislunarEarthDistance = cislunarDist;
     const phys = TrajectoryGenerator.evaluatePhysicalSceneAtTime(this._parsedTrajectory, t_s, {
-      cislunarDistance: this.cislunarEarthDistance,
+      cislunarDistance: cislunarDist,
     });
 
     this._sunDir.set(phys.sunDirScene[0], phys.sunDirScene[1], phys.sunDirScene[2]).normalize();
-    this.sunGroup.position.copy(this._sunDir).multiplyScalar(this.sunDistance);
+    this._syncSunPositionAndScale();
 
     this._earthDir
       .set(phys.earthDirFromMoonWorld[0], phys.earthDirFromMoonWorld[1], phys.earthDirFromMoonWorld[2])
@@ -491,20 +539,26 @@ export class CelestialEnvironment {
     this.earthAtmoMaterial = atmosphereMaterial;
   }
 
-  _rebuildTrajectoryIfNeeded() {
+  _rebuildTrajectoryIfNeeded({ preserveTime } = {}) {
     if (!this._parsedTrajectory) return;
     const needsRebuild = this._trajectoryDirty || !this._generatedTrajectory;
     if (!needsRebuild) return;
 
+    const activeDist = this.getActiveCislunarDistance();
+    this.cislunarEarthDistance = activeDist;
     const generated = TrajectoryGenerator.generateCislunarPath(this._parsedTrajectory, {
       earthRadius: this.earthRadius,
       moonRadius: MOON_CONFIG.RADIUS,
-      cislunarDistance: this.cislunarEarthDistance,
+      cislunarDistance: activeDist,
+      simple: this._simpleTrajectoryMode,
     });
-    const preserveTime = !this._trajectoryDirty && Boolean(this._generatedTrajectory);
+    const shouldPreserveTime =
+      typeof preserveTime === 'boolean'
+        ? preserveTime
+        : !this._trajectoryDirty && Boolean(this._generatedTrajectory);
     this._generatedTrajectory = generated;
     this._trajectoryDirty = false;
-    this.trajectoryRenderer.setGeneratedTrajectory(generated, { preserveTime });
+    this.trajectoryRenderer.setGeneratedTrajectory(generated, { preserveTime: shouldPreserveTime });
   }
 
   _syncTrajectoryState() {
@@ -532,15 +586,18 @@ export class CelestialEnvironment {
     }
     this.celestialSphereGroup.quaternion.setFromEuler(this._lunarSkyEuler);
 
+    const activeDist = this.getActiveCislunarDistance();
+    this.cislunarEarthDistance = activeDist;
     if (this.earthGroup) {
       this.earthGroup.visible = true;
       const distance =
         this.viewMode === VIEW_MODES.CISLUNAR
-          ? this.cislunarEarthDistance
+          ? activeDist
           : this._currentEarthDistance;
       // У режимі LUNAR Земля завжди розташована вздовж реального вектора Місяць -> Земля (_earthDir)
       this.earthGroup.position.copy(this._earthDir).multiplyScalar(distance);
     }
+    this._syncSunPositionAndScale();
     this._syncTrajectoryState();
   }
 
@@ -633,6 +690,8 @@ export class CelestialEnvironment {
       isPlaying: this.trajectoryRenderer.isPlaying(),
       currentTimeSec: this.trajectoryRenderer.getTimeSeconds(),
       userVisible: this._trajectoryUserVisible,
+      simple: this._simpleTrajectoryMode,
+      cislunarDistance: this.getActiveCislunarDistance(),
     };
   }
 
@@ -688,7 +747,7 @@ export class CelestialEnvironment {
       ? ephemData.earthDistanceKm / (MOON_CONFIG.RADIUS * MOON_CONFIG.RADIUS_KM)
       : this.earthDistance;
 
-    this.sunGroup.position.copy(this._sunDir).multiplyScalar(this.sunDistance);
+    this._syncSunPositionAndScale();
     this._syncEarthState();
 
     if (this.earthGroup?.userData?.update) {

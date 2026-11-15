@@ -134,6 +134,25 @@ select:focus-visible {
   color: var(--sx-warn);
 }
 
+.object-label.has-elevation {
+  padding: 3px 7px;
+  text-align: center;
+  line-height: 1.25;
+}
+
+.object-label-main {
+  display: block;
+}
+
+.object-label-sub {
+  display: block;
+  margin-top: 1px;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
 .webgl-notice {
   position: absolute;
   top: 43%;

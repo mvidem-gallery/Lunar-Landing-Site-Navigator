@@ -16,6 +16,7 @@ const TAB_TITLES = {
   missions: { title: 'Mission', badge: 'MISSION' },
   sites: { title: 'Landing Sites', badge: 'CATALOG' },
   layers: { title: 'Map Layers', badge: 'LAYERS' },
+  ai: { title: 'AI Report', badge: 'DSS · AI' },
 };
 
 const LAYER_DESCRIPTIONS = {
@@ -40,6 +41,7 @@ export class UIController {
       missions: document.getElementById('tab-missions'),
       sites: document.getElementById('tab-sites'),
       layers: document.getElementById('tab-layers'),
+      ai: document.getElementById('tab-ai'),
     };
 
     this.topFloatingBar = document.getElementById('top-floating-bar');
@@ -88,6 +90,7 @@ export class UIController {
     this.btsSolarBtn = document.getElementById('bts-solar-btn');
     this.railRulerBtn = document.getElementById('rail-ruler-btn');
     this.rightRulerBtn = document.getElementById('ruler-toggle-btn');
+    this.simpleTrajectoryBtn = document.getElementById('simple-trajectory-btn');
 
     // Телеметрія (права панель + нижня стрічка)
     this.cameraStatus = document.getElementById('camera-status');
@@ -119,12 +122,15 @@ export class UIController {
     this.cislunarFocusChangeCallback = null;
     this.searchProvider = null;
     this.topMissionClickCallback = null;
+    this.leftTabChangeCallback = null;
 
     this.trajectoryToggleCallback = null;
     this.trajectoryFileLoadCallback = null;
     this.trajectoryPlayPauseCallback = null;
     this.trajectoryScrubCallback = null;
+    this.simpleTrajectoryToggleCallback = null;
     this._isTrajectoryPlaying = true;
+    this._isSimpleTrajectory = true;
 
     this._isRightDrawerOpen = false;
     this._isLeftCollapsed = false;
@@ -273,6 +279,13 @@ export class UIController {
 
     this.topMissionPill?.addEventListener('click', () => {
       this.topMissionClickCallback?.();
+    });
+
+    // Перемикач спрощеної/натуральної траєкторії
+    this.simpleTrajectoryBtn?.addEventListener('click', () => {
+      const next = !this._isSimpleTrajectory;
+      this.setSimpleTrajectoryUI(next);
+      this.simpleTrajectoryToggleCallback?.(next);
     });
 
     // Кнопка Home
@@ -439,6 +452,8 @@ export class UIController {
     const meta = TAB_TITLES[tabName] || { title: 'Panel', badge: '' };
     if (this.leftDrawerTitle) this.leftDrawerTitle.textContent = meta.title;
     if (this.leftDrawerBadge) this.leftDrawerBadge.textContent = meta.badge;
+    document.body.classList.toggle('ai-tab-active', tabName === 'ai' && !this._isLeftCollapsed);
+    this.leftTabChangeCallback?.(this._activeLeftTab, { collapsed: this._isLeftCollapsed });
   }
 
   setLeftCollapsed(collapsed) {
@@ -446,7 +461,24 @@ export class UIController {
     this.leftDock?.classList.toggle('collapsed', this._isLeftCollapsed);
     this.bottomDock?.classList.toggle('left-collapsed', this._isLeftCollapsed);
     this.topFloatingBar?.classList.toggle('left-collapsed', this._isLeftCollapsed);
+    document.body.classList.toggle(
+      'ai-tab-active',
+      this._activeLeftTab === 'ai' && !this._isLeftCollapsed
+    );
     window.dispatchEvent(new Event('resize'));
+    this.leftTabChangeCallback?.(this._activeLeftTab, { collapsed: this._isLeftCollapsed });
+  }
+
+  getActiveLeftTab() {
+    return this._activeLeftTab;
+  }
+
+  isLeftCollapsed() {
+    return this._isLeftCollapsed;
+  }
+
+  onLeftTabChange(callback) {
+    this.leftTabChangeCallback = callback;
   }
 
   toggleRightDrawer() {
@@ -477,6 +509,18 @@ export class UIController {
   }
 
   setCislunarFocusUI() {}
+
+  setSimpleTrajectoryUI(simple) {
+    this._isSimpleTrajectory = Boolean(simple);
+    if (this.simpleTrajectoryBtn) {
+      this.simpleTrajectoryBtn.classList.toggle('active', this._isSimpleTrajectory);
+      this.simpleTrajectoryBtn.setAttribute('aria-checked', this._isSimpleTrajectory ? 'true' : 'false');
+    }
+  }
+
+  onSimpleTrajectoryToggle(callback) {
+    this.simpleTrajectoryToggleCallback = callback;
+  }
 
   updateTrajectoryInfo(info) {
     if (!info) {

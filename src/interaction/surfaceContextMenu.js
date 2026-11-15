@@ -14,6 +14,7 @@ export class SurfaceContextMenu {
    * @param {Function} [options.getViewMode]
    * @param {Function} [options.getRightClickTarget]
    * @param {Function} [options.onFocusBody]
+   * @param {Function} [options.onCreateMission]
    * @param {Function} options.onLandTo
    * @param {Function} [options.onSaveLandingSite]
    * @param {Function} [options.onSetMissionTarget]
@@ -30,6 +31,7 @@ export class SurfaceContextMenu {
       getViewMode,
       getRightClickTarget,
       onFocusBody,
+      onCreateMission,
       onLandTo,
       onSaveLandingSite,
       onSetMissionTarget,
@@ -45,6 +47,7 @@ export class SurfaceContextMenu {
     this.getViewMode = getViewMode;
     this.getRightClickTarget = getRightClickTarget;
     this.onFocusBody = onFocusBody;
+    this.onCreateMission = onCreateMission;
     this.onLandTo = onLandTo;
     this.onSaveLandingSite = onSaveLandingSite;
     this.onSetMissionTarget = onSetMissionTarget;
@@ -85,6 +88,10 @@ export class SurfaceContextMenu {
           <span class="lunar-telemetry-val" data-field="earth-los">VISIBLE</span>
         </div>
       </div>
+      <button type="button" class="lunar-context-menu-item" data-action="create-mission">
+        <span>Create Mission</span>
+        <span class="lunar-context-menu-item-icon">+NEW</span>
+      </button>
       <button type="button" class="lunar-context-menu-item" data-action="focus-earth">
         <span>Focus on Earth</span>
         <span class="lunar-context-menu-item-icon">CAM</span>
@@ -122,6 +129,7 @@ export class SurfaceContextMenu {
     this.illuminationEl = this.menuEl.querySelector('[data-field="illumination"]');
     this.illumBarEl = this.menuEl.querySelector('[data-field="illum-bar"]');
     this.earthLosEl = this.menuEl.querySelector('[data-field="earth-los"]');
+    this.createMissionBtn = this.menuEl.querySelector('[data-action="create-mission"]');
     this.focusEarthBtn = this.menuEl.querySelector('[data-action="focus-earth"]');
     this.focusMoonBtn = this.menuEl.querySelector('[data-action="focus-moon"]');
     this.focusSystemBtn = this.menuEl.querySelector('[data-action="focus-system"]');
@@ -282,6 +290,14 @@ export class SurfaceContextMenu {
       this.hide();
     });
 
+    this.createMissionBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.activeTarget?.showLunarActions && typeof this.onCreateMission === 'function') {
+        this.onCreateMission({ ...this.activeTarget });
+      }
+      this.hide();
+    });
+
     this.setMissionTargetBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (this.activeTarget?.showLunarActions && typeof this.onSetMissionTarget === 'function') {
@@ -398,6 +414,7 @@ export class SurfaceContextMenu {
       this.telemetryEl.style.display = 'none';
     }
 
+    this.createMissionBtn.style.display = target.showLunarActions ? 'flex' : 'none';
     this.focusEarthBtn.style.display = target.showFocusEarth ? 'flex' : 'none';
     this.focusMoonBtn.style.display = target.showFocusMoon ? 'flex' : 'none';
     this.focusSystemBtn.style.display = target.showFocusSystem ? 'flex' : 'none';

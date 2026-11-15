@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { TRAJECTORY_CONFIG } from '../config/constants.js';
+import { EARTH_CONFIG, TRAJECTORY_CONFIG } from '../config/constants.js';
 import { TrajectoryGenerator } from '../astronomy/trajectoryGenerator.js';
 
 const EVENT_DISPLAY_LABELS = {
@@ -112,6 +112,7 @@ export class TrajectoryRenderer {
     this._disposables = [];
     this._eventMarkers = [];
     this._eventSprites = [];
+    this._sceneScaleFactor = 1;
 
     this._spacecraftGroup = null;
     this._spacecraftHalo = null;
@@ -197,6 +198,11 @@ export class TrajectoryRenderer {
     }
 
     const { segments, moonOrbitPoints, events, sceneParams, meta } = this._generated;
+    const cislunarDist = sceneParams?.cislunarDistance ?? EARTH_CONFIG.CISLUNAR_DISTANCE;
+    this._sceneScaleFactor = Math.max(
+      1,
+      cislunarDist / Math.max(1, EARTH_CONFIG.CISLUNAR_DISTANCE)
+    );
     const earthCenter = new THREE.Vector3(...(sceneParams.earthCenter || [0, 0, 0]));
     const defaultMoonCenter = new THREE.Vector3(...(sceneParams.initialMoonCenter || [15, 0, 0]));
     const evMoonCenter = new THREE.Vector3();
@@ -218,8 +224,8 @@ export class TrajectoryRenderer {
         transparent: true,
         opacity: orbitStyle.opacity,
         dashed: true,
-        dashSize: orbitStyle.dashSize,
-        gapSize: orbitStyle.gapSize,
+        dashSize: orbitStyle.dashSize * this._sceneScaleFactor,
+        gapSize: orbitStyle.gapSize * this._sceneScaleFactor,
         dashScale: 1,
         depthTest: true,
         depthWrite: false,
@@ -323,11 +329,17 @@ export class TrajectoryRenderer {
           if (outward.lengthSq() < 1e-6) outward.set(0, 1, 0);
           outward.normalize();
 
-          const verticalNudge = ev.name === 'doi' ? -0.35 : ev.name === 'loi' ? 0.35 : 0.22;
+          const verticalSign = ev.name === 'doi' ? -0.64 : ev.name === 'loi' ? 0.64 : 0.4;
+          const initialOffset = 0.55 * this._sceneScaleFactor;
+          badge.sprite.userData = {
+            anchorPos: marker.position.clone(),
+            outward: outward.clone(),
+            verticalSign,
+          };
           badge.sprite.position
             .copy(marker.position)
-            .addScaledVector(outward, 0.55)
-            .add(new THREE.Vector3(0, verticalNudge, 0));
+            .addScaledVector(outward, initialOffset);
+          badge.sprite.position.y += verticalSign * initialOffset;
 
           this.group.add(badge.sprite);
           this._eventSprites.push(badge.sprite);
@@ -449,21 +461,38 @@ export class TrajectoryRenderer {
         marker.getWorldPosition(this._tmpWorldPos);
         const camDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);
         const base = marker.userData.baseRadius || 0.05;
-        const scale = THREE.MathUtils.clamp(camDist * base * 0.042, base * 0.16, base * 1.9);
+        const scale = THREE.MathUtils.clamp(
+          camDist * base * 0.042,
+          base * 0.16,
+          base * 1.9 * this._sceneScaleFactor
+        );
         marker.scale.setScalar(scale);
       }
 
       for (const sprite of this._eventSprites) {
+        const anchorPos = sprite.userData?.anchorPos;
+        if (anchorPos && sprite.userData?.outward) {
+          this._tmpWorldPos.copy(anchorPos);
+          this.group.localToWorld(this._tmpWorldPos);
+          const anchorCamDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);
+          const offset = THREE.MathUtils.clamp(
+            anchorCamDist * 0.022,
+            0.28,
+            0.55 * this._sceneScaleFactor
+          );
+          sprite.position.copy(anchorPos).addScaledVector(sprite.userData.outward, offset);
+          sprite.position.y += (sprite.userData.verticalSign || 0) * offset;
+        }
         sprite.getWorldPosition(this._tmpWorldPos);
         const camDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);
-        const h = THREE.MathUtils.clamp(camDist * 0.032, 0.06, 0.92);
+        const h = THREE.MathUtils.clamp(camDist * 0.032, 0.06, 0.92 * this._sceneScaleFactor);
         sprite.scale.set(h * (320 / 96), h, 1);
       }
 
       if (this._spacecraftGroup) {
         this._spacecraftGroup.getWorldPosition(this._tmpWorldPos);
         const camDist = this._tmpCamPos.distanceTo(this._tmpWorldPos);
-        const scScale = THREE.MathUtils.clamp(camDist * 0.04, 0.08, 1.5);
+        const scScale = THREE.MathUtils.clamp(camDist * 0.04, 0.08, 1.5 * this._sceneScaleFactor);
         this._spacecraftGroup.scale.setScalar(scScale);
       }
     }

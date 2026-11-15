@@ -597,6 +597,12 @@ export class TrajectoryGenerator {
     return vecScale(mrDirScene, visDist);
   }
 
+  static getNaturalCislunarDistance(parsed, moonRadius = MOON_CONFIG.RADIUS) {
+    const refDistKm = parsed?.meanMoonDistanceKm || 384400;
+    const moonKm = parsed?.moonRadiusKm || MOON_CONFIG.RADIUS_KM;
+    return refDistKm * (moonRadius / moonKm);
+  }
+
   /**
    * Evaluates full instantaneous physical ephemeris and body orientations in Three.js Scene space
    * for any mission elapsed time `t_s`:
@@ -662,7 +668,11 @@ export class TrajectoryGenerator {
   static mapStateToCislunarScene(state, parsed, sceneParams = {}) {
     const earthRadius = sceneParams.earthRadius ?? EARTH_CONFIG.RADIUS;
     const moonRadius = sceneParams.moonRadius ?? MOON_CONFIG.RADIUS;
-    const cislunarDist = sceneParams.cislunarDistance ?? EARTH_CONFIG.CISLUNAR_DISTANCE;
+    const simple = sceneParams.simple !== false;
+    const cislunarDist = simple
+      ? (sceneParams.cislunarDistance ?? EARTH_CONFIG.CISLUNAR_DISTANCE)
+      : (sceneParams.cislunarDistance ??
+        TrajectoryGenerator.getNaturalCislunarDistance(parsed, moonRadius));
     const refDistKm = parsed.meanMoonDistanceKm || 384400;
     const scale = cislunarDist / refDistKm;
 
@@ -671,6 +681,12 @@ export class TrajectoryGenerator {
     const D_km = Math.max(R_E_km + R_M_km + 1, vecNorm(state.moon_r));
 
     const r_sc = j2000ToSceneAxes(state.r);
+    const chordBase = vecScale(r_sc, scale);
+
+    if (!simple) {
+      return chordBase;
+    }
+
     const rm_sc = j2000ToSceneAxes(state.r_moon);
     const moonCenter = TrajectoryGenerator.getCompressedMoonCenterScene(state.moon_r, parsed, {
       cislunarDistance: cislunarDist,
@@ -678,8 +694,6 @@ export class TrajectoryGenerator {
 
     const dE_km = vecNorm(state.r);
     const dM_km = vecNorm(state.r_moon);
-
-    const chordBase = vecScale(r_sc, scale);
 
     // Near-Earth radial clearance envelope around (0, 0, 0)
     const rawSurfaceE = R_E_km * scale;
@@ -729,7 +743,10 @@ export class TrajectoryGenerator {
   static generateCislunarPath(parsed, sceneParams = {}) {
     const earthRadius = sceneParams.earthRadius ?? EARTH_CONFIG.RADIUS;
     const moonRadius = sceneParams.moonRadius ?? MOON_CONFIG.RADIUS;
-    const cislunarDistance = sceneParams.cislunarDistance ?? EARTH_CONFIG.CISLUNAR_DISTANCE;
+    const simple = sceneParams.simple !== false;
+    const cislunarDistance = simple
+      ? (sceneParams.cislunarDistance ?? EARTH_CONFIG.CISLUNAR_DISTANCE)
+      : TrajectoryGenerator.getNaturalCislunarDistance(parsed, moonRadius);
 
     const nearEarthSolidKm = parsed.earthRadiusKm * TRAJECTORY_CONFIG.NEAR_EARTH_SOLID_RADIUS_MULT;
     const nearMoonSolidKm = parsed.moonRadiusKm * TRAJECTORY_CONFIG.NEAR_MOON_SOLID_RADIUS_MULT;
@@ -738,6 +755,7 @@ export class TrajectoryGenerator {
       earthRadius,
       moonRadius,
       cislunarDistance,
+      simple,
     };
 
     const samples = parsed.samples;
@@ -845,7 +863,9 @@ export class TrajectoryGenerator {
       allTimes[i] = ds.t_s;
       allPhases[i] = ds.phase;
       allCompressed[i] =
-        ds.phase === 'transfer' && dE_km > nearEarthSolidKm && dM_km > nearMoonSolidKm ? 1 : 0;
+        simple && ds.phase === 'transfer' && dE_km > nearEarthSolidKm && dM_km > nearMoonSolidKm
+          ? 1
+          : 0;
       allEarthAltKm[i] = dE_km - parsed.earthRadiusKm;
       allMoonAltKm[i] = dM_km - parsed.moonRadiusKm;
 
@@ -1040,6 +1060,7 @@ export class TrajectoryGenerator {
         earthRadius,
         moonRadius,
         cislunarDistance,
+        simple,
         earthCenter: [0, 0, 0],
         initialMoonCenter,
         refMoonCenter,

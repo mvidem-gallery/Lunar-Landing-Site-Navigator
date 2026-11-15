@@ -54,6 +54,17 @@
               <path d="M3 18l9 5 9-5" />
             </svg>
           </button>
+          <button
+            type="button"
+            class="rail-btn rail-btn--ai"
+            data-rail-tab="ai"
+            title="AI Landing Viability Dashboard (Lunar Report DSS)"
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z" />
+              <path d="M5 19h14" />
+            </svg>
+          </button>
         </div>
 
         <div class="rail-group">
@@ -170,6 +181,11 @@
               </div>
             </section>
           </div>
+        </div>
+
+        <!-- Tab 4: AI Report Dashboard -->
+        <div id="tab-ai" class="drawer-tab-pane">
+          <div id="ai-report-slot" class="drawer-slot-fill"></div>
         </div>
       </div>
     </aside>
@@ -335,6 +351,20 @@
 
     <!-- Top-right compass & quick action toolbar -->
     <div id="right-toolbar" class="right-toolbar">
+      <button
+        type="button"
+        id="simple-trajectory-btn"
+        class="right-simple-switch active"
+        role="switch"
+        aria-checked="true"
+        title="Simple Trajectory Scale (compressed Earth–Moon gap). Turn off for full natural Earth–Moon distance."
+      >
+        <span class="simple-switch-label">SIMPLE</span>
+        <span class="simple-switch-track" aria-hidden="true">
+          <span class="simple-switch-thumb"></span>
+        </span>
+      </button>
+
       <button
         type="button"
         id="right-toolbar-collapse-btn"

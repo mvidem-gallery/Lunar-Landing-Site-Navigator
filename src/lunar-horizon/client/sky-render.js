@@ -1,6 +1,9 @@
 import * as THREE from './three.js?v=terrain-v3';
 import { earthTextureBasis, equatorialVector, lunarSkyBasis } from './sky.js?v=sky-v1';
-import { direction, dot } from './math.js?v=orbit-v1';
+import { direction, dot, D } from './math.js?v=orbit-v1';
+
+const GUIDE_RADIUS = 1050000;
+const MAX_ARC_POINTS = 65;
 
 export function createSkyVisuals(scene, enabled) {
   const vertex = `
@@ -111,6 +114,114 @@ export function createSkyVisuals(scene, enabled) {
   scene.add(starFrame);
   if (enabled) void loadStars(starFrame);
 
+  const guideFrame = new THREE.Group();
+  guideFrame.visible = false;
+  scene.add(guideFrame);
+
+  const horizonPositions = new Float32Array(361 * 3);
+  for (let i = 0; i <= 360; i++) {
+    const rad = i * D;
+    horizonPositions[i * 3] = Math.sin(rad) * GUIDE_RADIUS;
+    horizonPositions[i * 3 + 1] = 0;
+    horizonPositions[i * 3 + 2] = -Math.cos(rad) * GUIDE_RADIUS;
+  }
+  const horizonGeometry = new THREE.BufferGeometry();
+  horizonGeometry.setAttribute('position', new THREE.BufferAttribute(horizonPositions, 3));
+  const horizonRing = new THREE.Line(
+    horizonGeometry,
+    new THREE.LineDashedMaterial({
+      color: 0x94a3b8,
+      transparent: true,
+      opacity: 0.36,
+      dashSize: 22000,
+      gapSize: 16000,
+      depthWrite: false,
+      toneMapped: false,
+    })
+  );
+  horizonRing.computeLineDistances();
+  horizonRing.frustumCulled = false;
+  guideFrame.add(horizonRing);
+
+  function createElevationGuide(color) {
+    const arcPositions = new Float32Array(MAX_ARC_POINTS * 3);
+    const arcAttr = new THREE.BufferAttribute(arcPositions, 3);
+    arcAttr.setUsage(THREE.DynamicDrawUsage);
+    const arcGeo = new THREE.BufferGeometry();
+    arcGeo.setAttribute('position', arcAttr);
+    const arcLine = new THREE.Line(
+      arcGeo,
+      new THREE.LineDashedMaterial({
+        color,
+        transparent: true,
+        opacity: 0.78,
+        dashSize: 16000,
+        gapSize: 12000,
+        depthWrite: false,
+        toneMapped: false,
+      })
+    );
+    arcLine.frustumCulled = false;
+    arcLine.visible = false;
+
+    const tickPositions = new Float32Array(2 * 3);
+    const tickAttr = new THREE.BufferAttribute(tickPositions, 3);
+    tickAttr.setUsage(THREE.DynamicDrawUsage);
+    const tickGeo = new THREE.BufferGeometry();
+    tickGeo.setAttribute('position', tickAttr);
+    const tickLine = new THREE.Line(
+      tickGeo,
+      new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+        toneMapped: false,
+      })
+    );
+    tickLine.frustumCulled = false;
+    tickLine.visible = false;
+
+    guideFrame.add(arcLine, tickLine);
+
+    return {
+      update({ visible, azDeg, elDeg, horizonDeg }) {
+        if (!visible || !Number.isFinite(azDeg) || !Number.isFinite(elDeg)) {
+          arcLine.visible = false;
+          tickLine.visible = false;
+          return;
+        }
+        const endEl = elDeg >= 0 ? Math.min(0, horizonDeg) : 0;
+        const span = Math.abs(elDeg - endEl);
+        if (span > 0.05) {
+          const steps = Math.max(2, Math.min(MAX_ARC_POINTS - 1, Math.ceil(span / 1.5)));
+          const count = steps + 1;
+          for (let i = 0; i <= steps; i++) {
+            const el = elDeg + ((endEl - elDeg) * i) / steps;
+            const [dx, dy, dz] = direction(azDeg, el);
+            arcAttr.setXYZ(i, dx * GUIDE_RADIUS, dy * GUIDE_RADIUS, dz * GUIDE_RADIUS);
+          }
+          arcGeo.setDrawRange(0, count);
+          arcAttr.needsUpdate = true;
+          arcLine.computeLineDistances();
+          arcLine.visible = true;
+        } else {
+          arcLine.visible = false;
+        }
+
+        const [tx0, ty0, tz0] = direction(azDeg - 1.3, 0);
+        const [tx1, ty1, tz1] = direction(azDeg + 1.3, 0);
+        tickAttr.setXYZ(0, tx0 * GUIDE_RADIUS, ty0 * GUIDE_RADIUS, tz0 * GUIDE_RADIUS);
+        tickAttr.setXYZ(1, tx1 * GUIDE_RADIUS, ty1 * GUIDE_RADIUS, tz1 * GUIDE_RADIUS);
+        tickAttr.needsUpdate = true;
+        tickLine.visible = true;
+      },
+    };
+  }
+
+  const sunGuide = createElevationGuide(0xf59e0b);
+  const earthGuide = createElevationGuide(0x4db5ff);
+
   function update({ time, lat, lon, earthRow, sunRow }) {
     const basis = lunarSkyBasis(time, lat, lon);
     starFrame.matrix.set(...basis.flatMap((row) => [...row, 0]), 0, 0, 0, 1);
@@ -142,10 +253,18 @@ export function createSkyVisuals(scene, enabled) {
   return {
     earth,
     sun,
+    guideFrame,
     update,
+    updateGuides({ show, sun: sunState, earth: earthState }) {
+      guideFrame.visible = Boolean(show);
+      if (!show) return;
+      sunGuide.update(sunState);
+      earthGuide.update(earthState);
+    },
     followCamera(position) {
       starFrame.matrix.setPosition(position);
       starFrame.matrixWorldNeedsUpdate = true;
+      guideFrame.position.copy(position);
     },
   };
 }

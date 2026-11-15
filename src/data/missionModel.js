@@ -240,13 +240,17 @@ export function normalizeMission(raw) {
 }
 
 export function createMissionRecord({
+  id = null,
   name = 'New Mission',
   landingSite = null,
   landingDateIso = null,
   launchDateIso = null,
   transitDurationSec = null,
+  dateSource = null,
+  trajectory = null,
   useDefaultTrajectory = false,
   notes = '',
+  generation = null,
 } = {}) {
   const nowIso = new Date().toISOString();
   const computedTransit =
@@ -254,20 +258,9 @@ export function createMissionRecord({
       ? Number(transitDurationSec)
       : computeTransitDurationSec(launchDateIso, landingDateIso);
 
-  return {
-    schemaVersion: MISSION_SCHEMA_VERSION,
-    id: `mission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    name: String(name || 'New Mission').trim() || 'New Mission',
-    createdAt: nowIso,
-    updatedAt: nowIso,
-    landingSite: normalizeLandingSite(landingSite),
-    flight: {
-      launchDateIso,
-      landingDateIso,
-      transitDurationSec: computedTransit,
-      dateSource: landingDateIso ? 'manual' : 'unset',
-    },
-    trajectory: useDefaultTrajectory
+  const resolvedTrajectory = trajectory
+    ? normalizeTrajectoryConfig(trajectory)
+    : useDefaultTrajectory
       ? {
           sourceType: 'url',
           url: TRAJECTORY_CONFIG.DEFAULT_URL,
@@ -283,11 +276,33 @@ export function createMissionRecord({
           fileName: null,
           visible: true,
           meta: null,
-        },
+        };
+
+  return {
+    schemaVersion: MISSION_SCHEMA_VERSION,
+    id: id || `mission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: String(name || 'New Mission').trim() || 'New Mission',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    landingSite: normalizeLandingSite(landingSite),
+    flight: {
+      launchDateIso,
+      landingDateIso,
+      transitDurationSec: computedTransit,
+      dateSource:
+        dateSource ||
+        (resolvedTrajectory.sourceType !== 'none'
+          ? 'trajectory'
+          : landingDateIso
+            ? 'manual'
+            : 'unset'),
+    },
+    trajectory: resolvedTrajectory,
     points: [],
     measurements: [],
     modules: {
       notes: String(notes || ''),
+      ...(generation && typeof generation === 'object' ? { generation } : {}),
     },
   };
 }

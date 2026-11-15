@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="preload" href="./global-dem.bin" as="fetch" crossorigin>
-  <link rel="stylesheet" href="./style.css?v=flightdeck-v2">
+  <link rel="stylesheet" href="./style.css?v=flightdeck-v3">
 </head>
 <body class="lunar-app">
   <!-- Fullscreen 3D Surface Viewport -->
@@ -288,6 +288,7 @@
         <button id="reliefLight" type="button" class="right-tool-btn right-tool-text" aria-pressed="false" title="Toggle Terrain Relief Lighting">LIT</button>
         <button id="wire" type="button" class="right-tool-btn right-tool-text" aria-pressed="false" title="Toggle Terrain Wireframe">WIR</button>
         <button id="discScale" type="button" class="right-tool-btn right-tool-text active" aria-pressed="true" title="Toggle between 3× display and true angular size">×3</button>
+        <button id="skyElevation" type="button" class="right-tool-btn right-tool-text" aria-pressed="false" title="Show Sun &amp; Earth elevation angles above horizon (°)">EL°</button>
       </div>
     </div>
   </div>
@@ -420,6 +421,6 @@
     <p>Durations and event dates are interpolated estimates; short events can be missed between samples. Darkness endurance assumes a charged battery at landing and resets whenever direct sunlight returns. The lander is illustrative and aligned with the local terrain normal. This is a research prototype, not a validated flight planning tool.</p>
   </dialog>
 
-  <script type="module" src="./app.js?v=flightdeck-v2"></script>
+  <script type="module" src="./app.js?v=flightdeck-v3"></script>
 </body>
 </html>

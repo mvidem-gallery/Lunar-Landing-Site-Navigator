@@ -18,6 +18,11 @@ import {
   toDatetimeLocalUtc,
 } from '../data/missionModel.js';
 import { deleteTrajectoryDoc, saveTrajectoryDoc } from '../data/trajectoryStorage.js';
+import {
+  extractScheduleFromGeneratedResult,
+  fetchTrajectoryCatalog,
+  generateMissionTrajectory,
+} from '../data/trajectoryServiceClient.js';
 import { RulerTool } from './rulerTool.js';
 import './missionPanel.css';
 
@@ -122,6 +127,15 @@ export class MissionPanel {
     this._listSearchQuery = '';
     this._isRenameOpen = false;
     this._isNewMissionFormOpen = false;
+    this._isNewMissionAdvancedOpen = false;
+    this._newMissionFormError = '';
+    this._newMissionErrorKind = null;
+    this._isCreatingMission = false;
+    this._createMissionStatus = '';
+    this._createMissionAbort = null;
+    this._trajCatalog = null;
+    this._isCatalogLoading = false;
+    this._newMissionDraft = this._createEmptyNewMissionDraft();
     this._isTargetFormOpen = false;
     this._isAddPointFormOpen = false;
     this._targetFormError = '';
@@ -263,6 +277,86 @@ export class MissionPanel {
     this.render();
   }
 
+  _createEmptyNewMissionDraft() {
+    return {
+      name: '',
+      landingDateLocal: '',
+      lat: '',
+      lon: '',
+      trajectoryType: 'direct',
+      dateMode: 'arrival',
+      spaceport: '',
+      rocket: '',
+      spacecraft: '',
+      heightM: '',
+      landingWindowMode: 'flexible',
+      requireSunVisible: false,
+      sunElevationMinDeg: '0',
+      sunElevationMaxDeg: '90',
+      requireEarthVisible: false,
+      maxWaitInOrbitH: '48',
+      noTerrain: false,
+      noCache: false,
+      notes: '',
+    };
+  }
+
+  async _ensureTrajectoryCatalogLoaded() {
+    if (this._trajCatalog || this._isCatalogLoading) return;
+    this._isCatalogLoading = true;
+    try {
+      const catalog = await fetchTrajectoryCatalog();
+      this._trajCatalog = catalog;
+    } catch {
+      // Keep graceful empty catalog if endpoint temporarily unreachable
+    } finally {
+      this._isCatalogLoading = false;
+      if (this._isNewMissionFormOpen && !this._isCreatingMission) {
+        this._syncNewMissionDraftFromDom();
+        this.render();
+      }
+    }
+  }
+
+  openNewMissionForm({ lat = null, lon = null, landingDateIso = null, name = '' } = {}) {
+    if (this._isCreatingMission) {
+      this._createMissionAbort?.abort();
+      this._isCreatingMission = false;
+      this._createMissionStatus = '';
+      this._createMissionAbort = null;
+    }
+    this._panelView = 'list';
+    this._collapsedSections.delete('missions-list');
+    this._isRenameOpen = false;
+    this._isNewMissionFormOpen = true;
+    this._isNewMissionAdvancedOpen = false;
+    this._newMissionFormError = '';
+    this._newMissionErrorKind = null;
+
+    const fallbackDate = this.getCurrentTimelineDate?.();
+    const resolvedIso =
+      landingDateIso && Number.isFinite(Date.parse(landingDateIso))
+        ? new Date(Date.parse(landingDateIso)).toISOString()
+        : fallbackDate instanceof Date && !Number.isNaN(fallbackDate.getTime())
+          ? fallbackDate.toISOString()
+          : null;
+
+    const hasLatLon = Number.isFinite(Number(lat)) && Number.isFinite(Number(lon));
+    this._newMissionDraft = {
+      ...this._createEmptyNewMissionDraft(),
+      name: String(name || ''),
+      landingDateLocal: toDatetimeLocalUtc(resolvedIso),
+      lat: hasLatLon ? Number(lat).toFixed(5) : '',
+      lon: hasLatLon ? Number(lon).toFixed(5) : '',
+    };
+
+    this._ensureTrajectoryCatalogLoaded();
+    this.render();
+    const nameEl = this.contentHostEl?.querySelector('[data-field="new-mission-name"]');
+    nameEl?.focus();
+    nameEl?.select();
+  }
+
   openActiveMissionDetail(subTab = null) {
     this._panelView = 'detail';
     const normalizedTab = subTab === 'points' || subTab === 'ruler' ? 'surface' : subTab;
@@ -353,6 +447,10 @@ export class MissionPanel {
     });
 
     this.contentHostEl.addEventListener('input', (e) => {
+      if (e.target.closest('[data-form="new-mission"]')) {
+        this._syncNewMissionDraftFromDom();
+        return;
+      }
       if (e.target.matches('[data-field="list-search"]')) {
         this._listSearchQuery = e.target.value || '';
         this._renderMissionCardsOnly();
@@ -360,6 +458,37 @@ export class MissionPanel {
     });
 
     this.contentHostEl.addEventListener('change', (e) => {
+      if (e.target.closest('[data-form="new-mission"]')) {
+        this._syncNewMissionDraftFromDom();
+        if (e.target.matches('[data-field="new-mission-landing-mode"]')) {
+          const mode = this._newMissionDraft.landingWindowMode;
+          if (mode === 'flexible') {
+            this._newMissionDraft.requireSunVisible = false;
+            this._newMissionDraft.sunElevationMinDeg = '0';
+            this._newMissionDraft.sunElevationMaxDeg = '90';
+            this._newMissionDraft.requireEarthVisible = false;
+          } else if (mode === 'daylight') {
+            this._newMissionDraft.requireSunVisible = true;
+            this._newMissionDraft.sunElevationMinDeg = '0';
+            this._newMissionDraft.sunElevationMaxDeg = '90';
+            this._newMissionDraft.requireEarthVisible = false;
+          } else if (mode === 'daylight_earth') {
+            this._newMissionDraft.requireSunVisible = true;
+            this._newMissionDraft.sunElevationMinDeg = '0';
+            this._newMissionDraft.sunElevationMaxDeg = '90';
+            this._newMissionDraft.requireEarthVisible = true;
+          } else if (mode === 'artemis') {
+            this._newMissionDraft.requireSunVisible = true;
+            this._newMissionDraft.sunElevationMinDeg = '0';
+            this._newMissionDraft.sunElevationMaxDeg = '20';
+            this._newMissionDraft.requireEarthVisible = true;
+          }
+          this.render();
+        } else if (e.target.matches('[data-field="new-mission-req-sun"]')) {
+          this.render();
+        }
+        return;
+      }
       const mission = this.getActiveMission();
       if (!mission) return;
 
@@ -419,16 +548,63 @@ export class MissionPanel {
         this.openMissionList();
         break;
       case 'toggle-new-mission':
-        this._isNewMissionFormOpen = !this._isNewMissionFormOpen;
-        this.render();
         if (this._isNewMissionFormOpen) {
-          this.contentHostEl.querySelector('[data-field="new-mission-name"]')?.focus();
+          if (this._isCreatingMission) break;
+          this._isNewMissionFormOpen = false;
+          this._newMissionFormError = '';
+          this._newMissionErrorKind = null;
+          this.render();
+        } else {
+          this.openNewMissionForm();
         }
         break;
-      case 'cancel-new-mission':
-        this._isNewMissionFormOpen = false;
+      case 'toggle-new-mission-advanced':
+        this._syncNewMissionDraftFromDom();
+        this._isNewMissionAdvancedOpen = !this._isNewMissionAdvancedOpen;
         this.render();
         break;
+      case 'cancel-new-mission':
+        if (this._isCreatingMission) {
+          this._createMissionAbort?.abort();
+          this._isCreatingMission = false;
+          this._createMissionStatus = '';
+          this._newMissionFormError = 'Trajectory generation cancelled.';
+          this._newMissionErrorKind = null;
+          this.render();
+          break;
+        }
+        this._isNewMissionFormOpen = false;
+        this._isNewMissionAdvancedOpen = false;
+        this._newMissionFormError = '';
+        this._newMissionErrorKind = null;
+        this.render();
+        break;
+      case 'retry-new-mission-flexible': {
+        if (this._isCreatingMission) break;
+        this._syncNewMissionDraftFromDom();
+        this._newMissionDraft.landingWindowMode = 'flexible';
+        this._newMissionDraft.requireSunVisible = false;
+        this._newMissionDraft.sunElevationMinDeg = '0';
+        this._newMissionDraft.sunElevationMaxDeg = '90';
+        this._newMissionDraft.requireEarthVisible = false;
+        this._newMissionFormError = '';
+        this._newMissionErrorKind = null;
+        this.render();
+        const formEl = this.contentHostEl?.querySelector('[data-form="new-mission"]');
+        if (formEl) this._handleCreateMissionSubmit(formEl);
+        break;
+      }
+      case 'retry-new-mission-no-terrain': {
+        if (this._isCreatingMission) break;
+        this._syncNewMissionDraftFromDom();
+        this._newMissionDraft.noTerrain = true;
+        this._newMissionFormError = '';
+        this._newMissionErrorKind = null;
+        this.render();
+        const formEl = this.contentHostEl?.querySelector('[data-form="new-mission"]');
+        if (formEl) this._handleCreateMissionSubmit(formEl);
+        break;
+      }
       case 'clear-list-search':
         this._listSearchQuery = '';
         this.render();
@@ -775,28 +951,300 @@ export class MissionPanel {
     }
   }
 
-  _handleCreateMissionSubmit(formEl) {
-    const nameInput = formEl.querySelector('[data-field="new-mission-name"]');
-    const notesInput = formEl.querySelector('[data-field="new-mission-notes"]');
-    const useDefaultTraj = formEl.querySelector('[data-field="new-mission-default-traj"]')?.checked;
-    const rawName = (nameInput?.value || '').trim();
+  _syncNewMissionDraftFromDom() {
+    const formEl = this.contentHostEl?.querySelector('[data-form="new-mission"]');
+    if (!formEl) return;
+    const prev = this._newMissionDraft || this._createEmptyNewMissionDraft();
+    this._newMissionDraft = {
+      name: formEl.querySelector('[data-field="new-mission-name"]')?.value ?? prev.name ?? '',
+      landingDateLocal:
+        formEl.querySelector('[data-field="new-mission-landing-date"]')?.value ??
+        prev.landingDateLocal ??
+        '',
+      lat: formEl.querySelector('[data-field="new-mission-lat"]')?.value ?? prev.lat ?? '',
+      lon: formEl.querySelector('[data-field="new-mission-lon"]')?.value ?? prev.lon ?? '',
+      trajectoryType:
+        formEl.querySelector('[data-field="new-mission-traj-type"]')?.value ??
+        prev.trajectoryType ??
+        'direct',
+      dateMode:
+        formEl.querySelector('[data-field="new-mission-date-mode"]')?.value ??
+        prev.dateMode ??
+        'arrival',
+      spaceport:
+        formEl.querySelector('[data-field="new-mission-spaceport"]')?.value ??
+        prev.spaceport ??
+        '',
+      rocket:
+        formEl.querySelector('[data-field="new-mission-rocket"]')?.value ?? prev.rocket ?? '',
+      spacecraft:
+        formEl.querySelector('[data-field="new-mission-spacecraft"]')?.value ??
+        prev.spacecraft ??
+        '',
+      heightM:
+        formEl.querySelector('[data-field="new-mission-height-m"]')?.value ?? prev.heightM ?? '',
+      landingWindowMode:
+        formEl.querySelector('[data-field="new-mission-landing-mode"]')?.value ??
+        prev.landingWindowMode ??
+        'flexible',
+      requireSunVisible:
+        formEl.querySelector('[data-field="new-mission-req-sun"]')?.checked ??
+        Boolean(prev.requireSunVisible),
+      sunElevationMinDeg:
+        formEl.querySelector('[data-field="new-mission-sun-min"]')?.value ??
+        prev.sunElevationMinDeg ??
+        '0',
+      sunElevationMaxDeg:
+        formEl.querySelector('[data-field="new-mission-sun-max"]')?.value ??
+        prev.sunElevationMaxDeg ??
+        '90',
+      requireEarthVisible:
+        formEl.querySelector('[data-field="new-mission-req-earth"]')?.checked ??
+        Boolean(prev.requireEarthVisible),
+      maxWaitInOrbitH:
+        formEl.querySelector('[data-field="new-mission-max-wait-h"]')?.value ??
+        prev.maxWaitInOrbitH ??
+        '48',
+      noTerrain:
+        formEl.querySelector('[data-field="new-mission-no-terrain"]')?.checked ??
+        Boolean(prev.noTerrain),
+      noCache:
+        formEl.querySelector('[data-field="new-mission-no-cache"]')?.checked ??
+        Boolean(prev.noCache),
+      notes: formEl.querySelector('[data-field="new-mission-notes"]')?.value ?? prev.notes ?? '',
+    };
+  }
+
+  _resolveDraftLandingWindow(draft) {
+    const mode = draft.landingWindowMode || 'flexible';
+    if (mode !== 'custom') {
+      return { mode };
+    }
+    const sunMin = Number.parseFloat(String(draft.sunElevationMinDeg ?? '0').trim());
+    const sunMax = Number.parseFloat(String(draft.sunElevationMaxDeg ?? '90').trim());
+    const maxWait = Number.parseFloat(String(draft.maxWaitInOrbitH ?? '48').trim());
+    if (
+      !Number.isFinite(sunMin) ||
+      !Number.isFinite(sunMax) ||
+      sunMin < -10 ||
+      sunMax > 90 ||
+      sunMin >= sunMax
+    ) {
+      throw new Error(
+        'Sun elevation limits must satisfy -10° <= min < max <= 90°.'
+      );
+    }
+    if (!Number.isFinite(maxWait) || maxWait < 0 || maxWait > 720) {
+      throw new Error('Max orbit wait must be between 0 and 720 hours.');
+    }
+    return {
+      mode: 'custom',
+      requireSunVisible: Boolean(draft.requireSunVisible),
+      sunElevationMinDeg: sunMin,
+      sunElevationMaxDeg: sunMax,
+      requireEarthVisible: Boolean(draft.requireEarthVisible),
+      maxWaitInOrbitH: maxWait,
+    };
+  }
+
+  async _handleCreateMissionSubmit(formEl) {
+    if (this._isCreatingMission) return;
+    this._syncNewMissionDraftFromDom();
+    const draft = this._newMissionDraft;
+    const rawName = (draft.name || '').trim();
     const name = rawName || `Mission #${this.missions.length + 1}`;
-    const notes = (notesInput?.value || '').trim();
+    const notes = (draft.notes || '').trim();
 
-    const tlDate = this.getCurrentTimelineDate?.();
-    const landingDateIso =
-      tlDate instanceof Date && !Number.isNaN(tlDate.getTime()) ? tlDate.toISOString() : null;
+    const rawDate = (draft.landingDateLocal || '').trim();
+    let inputDateIso = null;
+    if (rawDate) {
+      inputDateIso = parseDatetimeLocalUtc(rawDate);
+      if (!inputDateIso) {
+        this._newMissionFormError = 'Invalid landing date format.';
+        this._newMissionErrorKind = null;
+        this.render();
+        return;
+      }
+    } else {
+      const tlDate = this.getCurrentTimelineDate?.();
+      inputDateIso =
+        tlDate instanceof Date && !Number.isNaN(tlDate.getTime()) ? tlDate.toISOString() : null;
+    }
 
-    const created = this.createMission({
-      name,
-      landingDateIso,
-      useDefaultTrajectory: Boolean(useDefaultTraj),
-      notes,
-    });
-    this._isNewMissionFormOpen = false;
-    this._panelView = 'detail';
-    this._detailTab = 'flight';
-    this.setActiveMission(created.id);
+    const rawLat = String(draft.lat ?? '').trim();
+    const rawLon = String(draft.lon ?? '').trim();
+    let landingSite = null;
+
+    if (rawLat !== '' || rawLon !== '') {
+      const lat = Number.parseFloat(rawLat);
+      const lon = Number.parseFloat(rawLon);
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+        this._newMissionFormError = 'Latitude must be between -90° and +90°.';
+        this._newMissionErrorKind = null;
+        this.render();
+        return;
+      }
+      if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+        this._newMissionFormError = 'Longitude must be between -180° and +180°.';
+        this._newMissionErrorKind = null;
+        this.render();
+        return;
+      }
+      landingSite = {
+        name: `${name} Target`,
+        lat,
+        lon,
+        note: notes,
+      };
+    }
+
+    if (!inputDateIso && !landingSite) {
+      this._newMissionFormError = 'Provide a landing date or landing site coordinates.';
+      this._newMissionErrorKind = null;
+      this.render();
+      return;
+    }
+
+    const rawHeight = String(draft.heightM ?? '').trim();
+    let heightM = null;
+    if (rawHeight !== '') {
+      heightM = Number.parseFloat(rawHeight);
+      if (!Number.isFinite(heightM)) {
+        this._newMissionFormError = 'Surface height override must be a valid number (meters).';
+        this._newMissionErrorKind = null;
+        this.render();
+        return;
+      }
+    }
+
+    let landingWindow = null;
+    try {
+      landingWindow = this._resolveDraftLandingWindow(draft);
+    } catch (lwErr) {
+      this._newMissionFormError = lwErr.message;
+      this._newMissionErrorKind = null;
+      this.render();
+      return;
+    }
+
+    const dateMode = draft.dateMode === 'launch' ? 'launch' : 'arrival';
+    const genPayload = {
+      dateMode,
+      ...(inputDateIso
+        ? dateMode === 'launch'
+          ? { launchDateIso: inputDateIso }
+          : { landingDateIso: inputDateIso }
+        : {}),
+      ...(landingSite ? { landingSite: { lat: landingSite.lat, lon: landingSite.lon } } : {}),
+      advanced: {
+        trajectory: draft.trajectoryType === 'hohmann' ? 'hohmann' : 'direct',
+        spaceport: draft.spaceport || null,
+        rocket: draft.rocket || null,
+        spacecraft: draft.spacecraft || null,
+        heightM,
+        landingWindow,
+        noTerrain: Boolean(draft.noTerrain),
+        noCache: Boolean(draft.noCache),
+      },
+    };
+
+    const abortCtrl = new AbortController();
+    this._newMissionFormError = '';
+    this._newMissionErrorKind = null;
+    this._isCreatingMission = true;
+    this._createMissionAbort = abortCtrl;
+    this._createMissionStatus = 'Submitting mission to trajectory solver...';
+    this.render();
+
+    try {
+      const result = await generateMissionTrajectory(genPayload, {
+        signal: abortCtrl.signal,
+        onProgress: (ev) => {
+          if (ev?.message) {
+            this._createMissionStatus = ev.message;
+            const statusEl = this.contentHostEl?.querySelector('[data-field="create-mission-status"]');
+            if (statusEl) statusEl.textContent = ev.message;
+          }
+        },
+      });
+
+      this._createMissionStatus = 'Saving generated trajectory...';
+      const statusEl = this.contentHostEl?.querySelector('[data-field="create-mission-status"]');
+      if (statusEl) statusEl.textContent = this._createMissionStatus;
+
+      const missionId = `mission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const docId = `traj-${missionId}-${Date.now()}`;
+      await saveTrajectoryDoc(docId, result.trajectory);
+
+      const schedule = extractScheduleFromGeneratedResult(result);
+      const resolvedLandingSite =
+        landingSite ||
+        (Number.isFinite(schedule.landingLatDeg) && Number.isFinite(schedule.landingLonDeg)
+          ? {
+              name: `${name} Target`,
+              lat: schedule.landingLatDeg,
+              lon: schedule.landingLonDeg,
+              note: notes,
+            }
+          : null);
+
+      const created = this.createMission({
+        id: missionId,
+        name,
+        landingSite: resolvedLandingSite,
+        launchDateIso: schedule.launchDateIso,
+        landingDateIso: schedule.landingDateIso || (dateMode === 'arrival' ? inputDateIso : null),
+        transitDurationSec: schedule.transitDurationSec,
+        dateSource: 'trajectory',
+        trajectory: {
+          sourceType: 'uploaded',
+          docId,
+          fileName: `trajectory-${result.job.job_id}.json`,
+          visible: true,
+          meta: null,
+        },
+        notes,
+        generation: {
+          jobId: result.job.job_id,
+          outcome: result.job.outcome || 'done',
+          elapsedS: result.job.elapsed_s ?? null,
+          request: result.request,
+          summaryStatus: result.summary?.summary?.status || null,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+
+      this._isCreatingMission = false;
+      this._createMissionStatus = '';
+      this._createMissionAbort = null;
+      this._isNewMissionFormOpen = false;
+      this._isNewMissionAdvancedOpen = false;
+      this._panelView = 'detail';
+      this._detailTab = 'flight';
+      this.setActiveMission(created.id, {
+        reason: 'create',
+        generatedDoc: result.trajectory,
+      });
+    } catch (err) {
+      this._isCreatingMission = false;
+      this._createMissionStatus = '';
+      this._createMissionAbort = null;
+      if (err?.name === 'AbortError') {
+        this._newMissionFormError = 'Trajectory generation cancelled.';
+        this._newMissionErrorKind = null;
+      } else {
+        const msg = err?.message || 'Failed to generate trajectory for mission.';
+        this._newMissionFormError = msg;
+        if (/no landing opportunity within max_wait_in_orbit_h|neither lighting nor earth|the sun is hidden|the earth is hidden/i.test(msg)) {
+          this._newMissionErrorKind = 'landing_window';
+        } else if (/landing site unsuitable/i.test(msg)) {
+          this._newMissionErrorKind = 'terrain';
+        } else {
+          this._newMissionErrorKind = null;
+        }
+      }
+      this.render();
+    }
   }
 
   _handleTargetFormSubmit(formEl) {
@@ -907,7 +1355,7 @@ export class MissionPanel {
     return clone;
   }
 
-  setActiveMission(missionId) {
+  setActiveMission(missionId, notifyMeta = {}) {
     if (!this.missions.some((m) => m.id === missionId)) return;
     this.activeMissionId = missionId;
     this._isRenameOpen = false;
@@ -918,7 +1366,7 @@ export class MissionPanel {
     this._persistState();
     this.render();
     this._rebuildGlobeObjects();
-    this._notifyMissionChange({ reason: 'switch' });
+    this._notifyMissionChange({ reason: 'switch', ...notifyMeta });
   }
 
   deleteMission(missionId) {
@@ -1291,6 +1739,51 @@ export class MissionPanel {
     const esc = MissionPanel.escapeHtml;
     const newFormClass = this._isNewMissionFormOpen ? 'visible' : '';
     const isListCollapsed = this._collapsedSections.has('missions-list');
+    const draft = this._newMissionDraft || this._createEmptyNewMissionDraft();
+    const busyAttr = this._isCreatingMission ? 'disabled' : '';
+
+    const catalog = this._trajCatalog;
+    const spaceports = catalog?.spaceports || [];
+    const rockets = catalog?.rockets || [];
+    const spacecraft = catalog?.spacecraft || [];
+
+    const spaceportOptionsHtml = spaceports
+      .map((sp) => {
+        const selected = draft.spaceport === sp.id ? 'selected' : '';
+        return `<option value="${esc(sp.id)}" ${selected}>${esc(sp.name || sp.id)} (${esc(sp.id)})</option>`;
+      })
+      .join('');
+
+    const rocketOptionsHtml = rockets
+      .map((rk) => {
+        const label = rk.resolved?.config?.name || rk.id;
+        const selected = draft.rocket === rk.id ? 'selected' : '';
+        return `<option value="${esc(rk.id)}" ${selected}>${esc(label)}</option>`;
+      })
+      .join('');
+
+    const spacecraftOptionsHtml = spacecraft
+      .map((sc) => {
+        const label = sc.resolved?.config?.name || sc.id;
+        const selected = draft.spacecraft === sc.id ? 'selected' : '';
+        return `<option value="${esc(sc.id)}" ${selected}>${esc(label)}</option>`;
+      })
+      .join('');
+
+    let solverStateBadge = 'CHECKING...';
+    let solverBadgeClass = '';
+    if (catalog) {
+      if (catalog.available) {
+        solverStateBadge = 'LWP-API/1 READY';
+        solverBadgeClass = 'nominal';
+      } else {
+        solverStateBadge = 'CATALOG ONLY (BUILD RUST BIN)';
+        solverBadgeClass = 'warn';
+      }
+    } else if (!this._isCatalogLoading) {
+      solverStateBadge = 'API OFFLINE';
+      solverBadgeClass = 'warn';
+    }
 
     return `
       <div class="mission-header-row">
@@ -1304,27 +1797,257 @@ export class MissionPanel {
       <div class="mission-section-body ${isListCollapsed ? 'collapsed' : ''}" style="${isListCollapsed ? '' : 'display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;'}">
       <form class="mission-add-form ${newFormClass}" data-form="new-mission">
         <div class="mission-form-title">CREATE MISSION</div>
-        <input
-          type="text"
-          class="hud-input"
-          data-field="new-mission-name"
-          placeholder="Mission name (e.g. Artemis IV — Shackleton)"
-          maxlength="60"
-        />
-        <input
-          type="text"
-          class="hud-input"
-          data-field="new-mission-notes"
-          placeholder="Mission objective / notes (optional)"
-          maxlength="140"
-        />
-        <label class="mission-check-row">
-          <input type="checkbox" data-field="new-mission-default-traj" />
-          <span>Attach default cislunar trajectory template</span>
-        </label>
+
+        <div class="mission-field-group">
+          <span class="mission-field-label">MISSION NAME</span>
+          <input
+            type="text"
+            class="hud-input"
+            data-field="new-mission-name"
+            placeholder="Mission name (e.g. Artemis IV — Shackleton)"
+            value="${esc(draft.name)}"
+            maxlength="60"
+            ${busyAttr}
+          />
+        </div>
+
+        <div class="mission-field-group">
+          <span class="mission-field-label">LANDING DATE (UTC)</span>
+          <input
+            type="datetime-local"
+            class="hud-input mission-datetime-input"
+            data-field="new-mission-landing-date"
+            value="${esc(draft.landingDateLocal)}"
+            ${busyAttr}
+          />
+        </div>
+
+        <div class="mission-field-group">
+          <span class="mission-field-label">LANDING SITE COORDINATES</span>
+          <div class="mission-coord-grid">
+            <input
+              type="number"
+              step="0.00001"
+              min="-90"
+              max="90"
+              class="hud-input"
+              data-field="new-mission-lat"
+              placeholder="Lat (-90..90)"
+              value="${esc(draft.lat)}"
+              ${busyAttr}
+            />
+            <input
+              type="number"
+              step="0.00001"
+              min="-180"
+              max="180"
+              class="hud-input"
+              data-field="new-mission-lon"
+              placeholder="Lon (-180..180)"
+              value="${esc(draft.lon)}"
+              ${busyAttr}
+            />
+          </div>
+        </div>
+
+        <div class="mission-advanced-box">
+          <button
+            type="button"
+            class="mission-advanced-toggle ${this._isNewMissionAdvancedOpen ? 'open' : ''}"
+            data-m-action="toggle-new-mission-advanced"
+            aria-expanded="${this._isNewMissionAdvancedOpen ? 'true' : 'false'}"
+          >
+            <span>ADVANCED</span>
+            <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </button>
+          <div class="mission-advanced-body ${this._isNewMissionAdvancedOpen ? 'open' : ''}">
+            <div class="mission-solver-row">
+              <span class="mission-field-label">TRAJECTORY SOLVER</span>
+              <span class="mission-source-chip ${solverBadgeClass}">${esc(solverStateBadge)}</span>
+            </div>
+
+            <div class="mission-coord-grid">
+              <div class="mission-field-group">
+                <span class="mission-field-label">TRANSFER TYPE</span>
+                <select class="hud-input mission-select" data-field="new-mission-traj-type" ${busyAttr}>
+                  <option value="direct" ${draft.trajectoryType !== 'hohmann' ? 'selected' : ''}>Direct (Lambert)</option>
+                  <option value="hohmann" ${draft.trajectoryType === 'hohmann' ? 'selected' : ''}>Hohmann</option>
+                </select>
+              </div>
+              <div class="mission-field-group">
+                <span class="mission-field-label">DATE MODE</span>
+                <select class="hud-input mission-select" data-field="new-mission-date-mode" ${busyAttr}>
+                  <option value="arrival" ${draft.dateMode !== 'launch' ? 'selected' : ''}>Landing Day (UTC)</option>
+                  <option value="launch" ${draft.dateMode === 'launch' ? 'selected' : ''}>Launch Day (UTC)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mission-field-group">
+              <span class="mission-field-label">SPACEPORT</span>
+              <select class="hud-input mission-select" data-field="new-mission-spaceport" ${busyAttr}>
+                <option value="">Auto (compare all suitable)</option>
+                ${spaceportOptionsHtml}
+              </select>
+            </div>
+
+            <div class="mission-field-group">
+              <span class="mission-field-label">LANDING CONSTRAINTS</span>
+              <select class="hud-input mission-select" data-field="new-mission-landing-mode" ${busyAttr}>
+                <option value="flexible" ${(draft.landingWindowMode || 'flexible') === 'flexible' ? 'selected' : ''}>Flexible (Any Sun / Far Side &amp; Relay OK)</option>
+                <option value="daylight" ${draft.landingWindowMode === 'daylight' ? 'selected' : ''}>Daylight Only (Sun 0°–90°, Any Side)</option>
+                <option value="daylight_earth" ${draft.landingWindowMode === 'daylight_earth' ? 'selected' : ''}>Near-Side Daylight (Sun 0°–90° + Earth LOS)</option>
+                <option value="artemis" ${draft.landingWindowMode === 'artemis' ? 'selected' : ''}>Strict Artemis (Sun 0°–20° + Earth LOS)</option>
+                <option value="custom" ${draft.landingWindowMode === 'custom' ? 'selected' : ''}>Custom Window Rules...</option>
+              </select>
+            </div>
+
+            ${
+              draft.landingWindowMode === 'custom'
+                ? `
+              <div class="mission-custom-lw-box">
+                <label class="mission-check-row">
+                  <input type="checkbox" data-field="new-mission-req-sun" ${draft.requireSunVisible ? 'checked' : ''} ${busyAttr} />
+                  <span>Require Sun visible above terrain</span>
+                </label>
+                <div class="mission-coord-grid">
+                  <div class="mission-field-group">
+                    <span class="mission-field-label">SUN MIN (°)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="-10"
+                      max="89"
+                      class="hud-input"
+                      data-field="new-mission-sun-min"
+                      value="${esc(draft.sunElevationMinDeg ?? '0')}"
+                      ${draft.requireSunVisible ? '' : 'disabled'}
+                      ${busyAttr}
+                    />
+                  </div>
+                  <div class="mission-field-group">
+                    <span class="mission-field-label">SUN MAX (°)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="-9"
+                      max="90"
+                      class="hud-input"
+                      data-field="new-mission-sun-max"
+                      value="${esc(draft.sunElevationMaxDeg ?? '90')}"
+                      ${draft.requireSunVisible ? '' : 'disabled'}
+                      ${busyAttr}
+                    />
+                  </div>
+                </div>
+                <label class="mission-check-row">
+                  <input type="checkbox" data-field="new-mission-req-earth" ${draft.requireEarthVisible ? 'checked' : ''} ${busyAttr} />
+                  <span>Require direct Earth line-of-sight</span>
+                </label>
+                <div class="mission-field-group">
+                  <span class="mission-field-label">MAX ORBIT WAIT (H)</span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="720"
+                    class="hud-input"
+                    data-field="new-mission-max-wait-h"
+                    value="${esc(draft.maxWaitInOrbitH ?? '48')}"
+                    ${busyAttr}
+                  />
+                </div>
+              </div>
+            `
+                : ''
+            }
+
+            <div class="mission-coord-grid">
+              <div class="mission-field-group">
+                <span class="mission-field-label">LAUNCH VEHICLE</span>
+                <select class="hud-input mission-select" data-field="new-mission-rocket" ${busyAttr}>
+                  <option value="">Default</option>
+                  ${rocketOptionsHtml}
+                </select>
+              </div>
+              <div class="mission-field-group">
+                <span class="mission-field-label">SPACECRAFT</span>
+                <select class="hud-input mission-select" data-field="new-mission-spacecraft" ${busyAttr}>
+                  <option value="">Default</option>
+                  ${spacecraftOptionsHtml}
+                </select>
+              </div>
+            </div>
+
+            <div class="mission-field-group">
+              <span class="mission-field-label">SURFACE HEIGHT OVERRIDE (M)</span>
+              <input
+                type="number"
+                step="1"
+                class="hud-input"
+                data-field="new-mission-height-m"
+                placeholder="Optional (used when terrain disabled)"
+                value="${esc(draft.heightM)}"
+                ${busyAttr}
+              />
+            </div>
+
+            <label class="mission-check-row">
+              <input type="checkbox" data-field="new-mission-no-terrain" ${draft.noTerrain ? 'checked' : ''} ${busyAttr} />
+              <span>Skip terrain DEM slope check (terrain_dir="")</span>
+            </label>
+
+            <label class="mission-check-row">
+              <input type="checkbox" data-field="new-mission-no-cache" ${draft.noCache ? 'checked' : ''} ${busyAttr} />
+              <span>Bypass ascent cache (no_cache)</span>
+            </label>
+
+            <input
+              type="text"
+              class="hud-input"
+              data-field="new-mission-notes"
+              placeholder="Mission objective / notes (optional)"
+              value="${esc(draft.notes)}"
+              maxlength="140"
+              ${busyAttr}
+            />
+          </div>
+        </div>
+
+        ${
+          this._isCreatingMission
+            ? `<div class="mission-gen-status" data-field="create-mission-status">${esc(this._createMissionStatus || 'Computing trajectory...')}</div>`
+            : ''
+        }
+        ${
+          this._newMissionFormError
+            ? `
+          <div class="mission-form-error visible">
+            <div>${esc(this._newMissionFormError)}</div>
+            ${
+              this._newMissionErrorKind === 'landing_window' && draft.landingWindowMode !== 'flexible'
+                ? `<div class="mission-form-error-actions">
+                    <button type="button" class="mission-mini-btn accent" data-m-action="retry-new-mission-flexible">USE FLEXIBLE WINDOW &amp; RETRY</button>
+                  </div>`
+                : ''
+            }
+            ${
+              this._newMissionErrorKind === 'terrain' && !draft.noTerrain
+                ? `<div class="mission-form-error-actions">
+                    <button type="button" class="mission-mini-btn gold" data-m-action="retry-new-mission-no-terrain">SKIP TERRAIN CHECK &amp; RETRY</button>
+                  </div>`
+                : ''
+            }
+          </div>
+        `
+            : ''
+        }
+
         <div class="mission-coord-grid">
           <button type="button" class="mission-mini-btn" data-m-action="cancel-new-mission">CANCEL</button>
-          <button type="submit" class="mission-mini-btn accent">CREATE MISSION</button>
+          <button type="submit" class="mission-mini-btn accent" ${busyAttr}>${this._isCreatingMission ? 'GENERATING...' : 'CREATE MISSION'}</button>
         </div>
       </form>
 
@@ -1653,6 +2376,11 @@ export class MissionPanel {
           <div class="mission-traj-compact">
             <div class="data-row"><span>Vehicle:</span> <span class="data-val val-accent">${esc(meta.rocket)}</span></div>
             <div class="data-row"><span>Spaceport:</span> <span class="data-val">${esc(meta.spaceportName)}</span></div>
+            ${
+              mission.modules?.generation?.jobId
+                ? `<div class="data-row"><span>Solver Job:</span> <span class="data-val">${esc(mission.modules.generation.jobId)}</span></div>`
+                : ''
+            }
             <div class="data-row"><span>Launch UTC:</span> <span class="data-val">${esc(formatUtcCompact(meta.launchUtc))}</span></div>
             <div class="data-row"><span>Touchdown UTC:</span> <span class="data-val val-nominal">${esc(formatUtcCompact(meta.touchdownUtc))}</span></div>
             <div class="data-row"><span>Transit Interval:</span> <span class="data-val">${esc(formatTransitDuration(meta.durationSec))}</span></div>

@@ -1,4 +1,4 @@
-import {createSkyVisuals} from './sky-render.js?v=sky-v2';
+import {createSkyVisuals} from './sky-render.js?v=sky-v3';
 import {imageryPlan, loadImageryBatch} from './imagery.js?v=imagery-v5';
 import {DAY, MINUTE, effectiveStep, solarMargin, darknessIntervals, longestDarkness, earliestWindow} from './mission.js?v=terrain-v3';
 import {createLander, seatLander} from './lander.js?v=lander-v2';
@@ -248,7 +248,7 @@ function showTerrainOverview(data, observerHeight) {
   const object = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({vertexColors: true}));
   overview = {
     object, camera: camera.position.clone(), badge: $('dataBadge').textContent,
-    visibility: [mesh, lander, sun, sunGlow, earth].filter(Boolean).map(object => [object, object.visible]),
+    visibility: [mesh, lander, sun, sunGlow, earth, skyVisuals.guideFrame].filter(Boolean).map(object => [object, object.visible]),
   };
   for (const [object] of overview.visibility) object.visible = false;
   overview.ranges = data.drawRanges;
@@ -565,13 +565,53 @@ $('discScale').onclick = () => {
     : 'True 1:1 angular size (click for 3×)';
   if (ephem && terrain && !overview) updateSkyObjects(evaluate(t));
 };
+let showSkyElevations = false;
+const skyBodyReadouts = {sun: null, earth: null};
+function formatSignedDeg(value) {
+  const rounded = Math.abs(value) < 0.05 ? 0 : value;
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '';
+  return `${sign}${fmt(Math.abs(rounded), 1)}°`;
+}
+function renderSkyLabel(labelEl, name, readout) {
+  if (!labelEl) return;
+  if (!showSkyElevations || !readout) {
+    labelEl.classList.remove('has-elevation');
+    labelEl.textContent = name;
+    return;
+  }
+  labelEl.classList.add('has-elevation');
+  labelEl.innerHTML =
+    `<span class="object-label-main">${name} · ${formatSignedDeg(readout.elDeg)}</span>` +
+    `<span class="object-label-sub">TERRAIN ${formatSignedDeg(readout.aboveHorizonDeg)}</span>`;
+}
+function refreshSkyLabels() {
+  renderSkyLabel($('sunLabel'), 'SUN', skyBodyReadouts.sun);
+  renderSkyLabel($('objectLabel'), 'EARTH', skyBodyReadouts.earth);
+}
+function applySkyElevationButton() {
+  const btn = $('skyElevation');
+  if (!btn) return;
+  btn.setAttribute('aria-pressed', String(showSkyElevations));
+  btn.classList.toggle('active', showSkyElevations);
+  btn.title = showSkyElevations
+    ? 'Hide Sun & Earth elevation angles above horizon (°)'
+    : 'Show Sun & Earth elevation angles above horizon (°)';
+}
+$('skyElevation').onclick = () => {
+  showSkyElevations = !showSkyElevations;
+  applySkyElevationButton();
+  refreshSkyLabels();
+  if (ephem && terrain && !overview) updateSkyObjects(evaluate(t));
+  else skyVisuals.updateGuides({show: false});
+};
+applySkyElevationButton();
 function updateSkyObjects({s, e}) {
   skyVisuals.update({time: t, lat: terrain.lat, lon: terrain.lon, earthRow: e, sunRow: s});
   $('sunDiameter').textContent = fmt(s[3], 3) + '°';
   $('earthDiameter').textContent = fmt(e[3], 3) + '°';
   const observerHeight = mission?.height ?? Number($('height').value);
   const lift = Math.max(0, camera.position.y - observerHeight);
-  for (const [object, row] of [[sun, s], [earth, e]]) {
+  for (const [object, row, key] of [[sun, s, 'sun'], [earth, e, 'earth']]) {
     const distance = 1000000;
     const relative = new THREE.Vector3(...direction(row[1], row[2])).multiplyScalar(row[4] * 1000);
     relative.y += observerHeight;
@@ -589,11 +629,24 @@ function updateSkyObjects({s, e}) {
     // Raising the viewer cannot increase terrain obstruction along the same bearing.
     // The rendered mesh still occludes the disc where it crosses the local skyline.
     const horizon = Math.min(groundHorizon, sphereDip);
-    object.visible = elevation + row[3] / 2 >= (lift === 0 ? groundHorizon : horizon);
+    const effectiveHorizon = lift === 0 ? groundHorizon : horizon;
+    object.visible = elevation + row[3] / 2 >= effectiveHorizon;
+    skyBodyReadouts[key] = {
+      azDeg: row[1],
+      elDeg: elevation,
+      horizonDeg: effectiveHorizon,
+      aboveHorizonDeg: elevation - effectiveHorizon,
+    };
   }
   sunGlow.position.copy(sun.position);
   sunGlow.scale.setScalar(sun.scale.x * 7);
   sunGlow.visible = sun.visible;
+  refreshSkyLabels();
+  skyVisuals.updateGuides({
+    show: showSkyElevations && !overview,
+    sun: {visible: sun.visible, ...skyBodyReadouts.sun},
+    earth: {visible: earth.visible, ...skyBodyReadouts.earth},
+  });
 }
 
 function updateCameraLift(updateSky = true) {
@@ -1045,8 +1098,9 @@ function positionLabel(object, label) {
   const edgeY = angle => (1 - Math.tan(angle) * verticalScale) * canvas.clientHeight / 2;
   const top = topAngle >= Math.PI / 2 ? -Infinity : edgeY(topAngle) - 7;
   const bottom = bottomAngle <= -Math.PI / 2 ? Infinity : edgeY(bottomAngle) + 7;
-  const above = top >= 18;
-  if (!above && bottom > canvas.clientHeight - 18) {
+  const minMargin = showSkyElevations ? 34 : 18;
+  const above = top >= minMargin;
+  if (!above && bottom > canvas.clientHeight - minMargin) {
     label.style.display = 'none';
     return;
   }

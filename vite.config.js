@@ -1,13 +1,22 @@
 import { defineConfig } from 'vite';
 import { PROXY_CONFIG } from './src/config/constants.js';
 import { lunarHorizonPlugin } from './src/lunar-horizon/vitePlugin.mjs';
+import { trajectoryServicePlugin } from './src/trajectory/vitePlugin.mjs';
+import { reportServicePlugin } from './src/report/vitePlugin.mjs';
 
 export default defineConfig({
-  plugins: [lunarHorizonPlugin()],
+  plugins: [lunarHorizonPlugin(), trajectoryServicePlugin(), reportServicePlugin()],
   server: {
     watch: {
-      // Виключаємо десятки тисяч локальних тайлів і сирі архіви DEM із file-watcher Vite
-      ignored: ['**/public/tiles/**', '**/tiles/**', '**/lunar-horizon-latest/**'],
+      // Виключаємо десятки тисяч локальних тайлів, сирі архіви DEM і папки задач генератора траєкторій із file-watcher Vite
+      ignored: [
+        '**/public/tiles/**',
+        '**/tiles/**',
+        '**/lunar-horizon-latest/**',
+        '**/trajectory/**/jobs/**',
+        '**/cache/**',
+        '**/report/**/.next/**',
+      ],
     },
     proxy: {
       [PROXY_CONFIG.OPM_TILES_PATH]: {
