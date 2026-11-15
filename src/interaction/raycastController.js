@@ -190,7 +190,7 @@ export class RaycastController {
 
       const sunDir = this.lightingSystem.getNormalizedSunDirection();
       const illumination = SolarMath.calculatePointIllumination(worldNormal, sunDir);
-      const isVisibleFromEarth = worldNormal.dot(this.earthDirection) >= 0.0045;
+      const isVisibleFromEarth = worldNormal.dot(this.earthDirection) >= MOON_CONFIG.HORIZON_THRESHOLD;
 
       this.onHoverCallback({
         lat,

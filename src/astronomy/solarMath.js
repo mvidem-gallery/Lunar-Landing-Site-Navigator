@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CELESTIAL_CONFIG } from '../config/constants.js';
 
 export class SolarMath {
   static subSolarToVector3(lonDeg, latDeg, distance = 50) {
@@ -13,8 +14,7 @@ export class SolarMath {
   }
 
   static calculatePointIllumination(surfaceNormal, sunDirection, distanceAU = 1.0) {
-    const SOLAR_CONSTANT = 1361.0;
-    const adjustedConstant = SOLAR_CONSTANT / (distanceAU * distanceAU);
+    const adjustedConstant = CELESTIAL_CONFIG.SOLAR_CONSTANT_WM2 / (distanceAU * distanceAU);
 
     const cosTheta = surfaceNormal.dot(sunDirection);
     const elevationRad = Math.asin(THREE.MathUtils.clamp(cosTheta, -1, 1));

@@ -1,5 +1,83 @@
 import * as THREE from 'three';
-import { MOON_CONFIG } from '../config/constants.js';
+import { MOON_CONFIG, CELESTIAL_CONFIG, STARMAP_CONFIG } from '../config/constants.js';
+
+const STARFIELD_VERTEX_SHADER = /* glsl */ `
+  #include <common>
+  #include <logdepthbuf_pars_vertex>
+
+  attribute float aSize;
+  attribute float aBrightness;
+  attribute vec3 aColor;
+
+  uniform float uPixelRatio;
+
+  varying vec3 vColor;
+  varying float vBrightness;
+
+  void main() {
+    vColor = aColor;
+    vBrightness = aBrightness;
+
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+    gl_PointSize = clamp(aSize * uPixelRatio, 1.0, 28.0);
+    #include <logdepthbuf_vertex>
+  }
+`;
+
+const STARFIELD_FRAGMENT_SHADER = /* glsl */ `
+  #include <common>
+  #include <logdepthbuf_pars_fragment>
+
+  varying vec3 vColor;
+  varying float vBrightness;
+
+  void main() {
+    #include <logdepthbuf_fragment>
+
+    vec2 p = (gl_PointCoord - vec2(0.5)) * 2.0;
+    float r = length(p);
+    if (r > 1.0) discard;
+
+    float core = exp(-r * r * 14.0);
+    float halo = exp(-r * 3.8) * 0.38;
+    float intensity = (core + halo) * vBrightness;
+
+    vec3 starCol = mix(vColor, vec3(1.0), clamp(core * 0.65, 0.0, 1.0));
+    gl_FragColor = vec4(starCol * intensity, clamp(intensity, 0.0, 1.0));
+  }
+`;
+
+const MILKYWAY_VERTEX_SHADER = /* glsl */ `
+  #include <common>
+  #include <logdepthbuf_pars_vertex>
+
+  varying vec2 vUv;
+
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    #include <logdepthbuf_vertex>
+  }
+`;
+
+const MILKYWAY_FRAGMENT_SHADER = /* glsl */ `
+  #include <common>
+  #include <logdepthbuf_pars_fragment>
+
+  uniform sampler2D uMap;
+  uniform float uIntensity;
+
+  varying vec2 vUv;
+
+  void main() {
+    #include <logdepthbuf_fragment>
+
+    vec3 texel = texture2D(uMap, vUv).rgb;
+    vec3 shaped = pow(max(texel, vec3(0.0)), vec3(1.22)) * uIntensity;
+    gl_FragColor = vec4(shaped, 1.0);
+  }
+`;
 
 const EARTH_VERTEX_SHADER = /* glsl */ `
   #include <common>
@@ -284,10 +362,16 @@ export class CelestialEnvironment {
     this.scene = scene;
 
     // Дистанції узгоджені з площиною відсікання камери, щоб Земля, Сонце та зорі не обрізалися
-    this.earthDistance = 221.2;
-    this.earthRadius = 3.667;
-    this.sunDistance = 420.0;
-    this.sunRadius = 4.2;
+    this.earthDistance = CELESTIAL_CONFIG.EARTH_DISTANCE;
+    this.earthRadius = CELESTIAL_CONFIG.EARTH_RADIUS;
+    this.sunDistance = CELESTIAL_CONFIG.SUN_DISTANCE;
+    this.sunRadius = CELESTIAL_CONFIG.SUN_RADIUS;
+
+    this.celestialSphereGroup = new THREE.Group();
+    this.celestialSphereGroup.name = 'CelestialSphere';
+    this.celestialSphereGroup.rotation.x = THREE.MathUtils.degToRad(
+      -STARMAP_CONFIG.ECLIPTIC_OBLIQUITY_DEG
+    );
 
     this.earthGroup = new THREE.Group();
     this.sunGroup = new THREE.Group();
@@ -295,13 +379,16 @@ export class CelestialEnvironment {
     this.earthSurfaceMesh = null;
     this.sunSurfaceMesh = null;
     this.sunBillboard = null;
+    this.starPoints = null;
+    this.milkywayMesh = null;
 
     this._sunDir = new THREE.Vector3(1, 0, 0);
     this._earthDir = new THREE.Vector3(1, 0, 0);
   }
 
   async init() {
-    this._createStarfield();
+    this.scene.add(this.celestialSphereGroup);
+    await this._createStarfield();
     this._createEarthModel();
     this._createSunModel();
 
@@ -309,11 +396,93 @@ export class CelestialEnvironment {
     this.scene.add(this.sunGroup);
   }
 
-  _createStarfield() {
-    const starCount = 3200;
+  _bvToRgb(bvRaw) {
+    const bv = THREE.MathUtils.clamp(Number.isFinite(bvRaw) ? bvRaw : 0.65, -0.4, 2.0);
+    // Формула Баллестероса: перетворення індексу кольору B-V у температуру зірки (К)
+    const temp = 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62));
+
+    let r;
+    let g;
+    let b;
+    const t = temp / 100;
+
+    if (t <= 66) {
+      r = 255;
+      g = 99.4708025861 * Math.log(Math.max(1, t)) - 161.1195681661;
+      b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+    } else {
+      r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+      g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+      b = 255;
+    }
+
+    // Пом'якшуємо насиченість, щоб зорі виглядали природно для людського ока
+    const rawR = THREE.MathUtils.clamp(r / 255, 0, 1);
+    const rawG = THREE.MathUtils.clamp(g / 255, 0, 1);
+    const rawB = THREE.MathUtils.clamp(b / 255, 0, 1);
+    return [
+      THREE.MathUtils.lerp(1.0, rawR, 0.55),
+      THREE.MathUtils.lerp(1.0, rawG, 0.55),
+      THREE.MathUtils.lerp(1.0, rawB, 0.55),
+    ];
+  }
+
+  _buildStarGeometryFromCatalog(features) {
+    const filtered = [];
+    for (const f of features) {
+      const mag = f?.properties?.mag;
+      const coords = f?.geometry?.coordinates;
+      if (typeof mag === 'number' && Array.isArray(coords) && mag <= STARMAP_CONFIG.MAX_MAGNITUDE) {
+        filtered.push(f);
+      }
+    }
+
+    const count = filtered.length;
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const sizes = new Float32Array(count);
+    const brightnesses = new Float32Array(count);
+    const radius = CELESTIAL_CONFIG.STARFIELD_RADIUS;
+
+    for (let i = 0; i < count; i++) {
+      const f = filtered[i];
+      const [raDeg, decDeg] = f.geometry.coordinates;
+      const mag = f.properties.mag;
+      const bv = parseFloat(f.properties.bv);
+
+      const raRad = THREE.MathUtils.degToRad(raDeg);
+      const decRad = THREE.MathUtils.degToRad(decDeg);
+
+      positions[i * 3] = radius * Math.cos(decRad) * Math.cos(raRad);
+      positions[i * 3 + 1] = radius * Math.sin(decRad);
+      positions[i * 3 + 2] = -radius * Math.cos(decRad) * Math.sin(raRad);
+
+      const [r, g, b] = this._bvToRgb(bv);
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+
+      // Яскраві зорі (mag < 1) більші з м'яким ореолом, слабкі (mag 6..8) — точні цятки
+      const magNorm = THREE.MathUtils.clamp((8.2 - mag) / 9.7, 0.0, 1.0);
+      sizes[i] = 1.6 + Math.pow(magNorm, 2.15) * 10.5;
+      brightnesses[i] = THREE.MathUtils.clamp(0.18 + Math.pow(magNorm, 1.65) * 1.15, 0.16, 1.35);
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+    geom.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geom.setAttribute('aBrightness', new THREE.BufferAttribute(brightnesses, 1));
+    return geom;
+  }
+
+  _buildProceduralFallbackStars() {
+    const starCount = CELESTIAL_CONFIG.STAR_COUNT;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
-    const radius = 850;
+    const sizes = new Float32Array(starCount);
+    const brightnesses = new Float32Array(starCount);
+    const radius = CELESTIAL_CONFIG.STARFIELD_RADIUS;
 
     for (let i = 0; i < starCount; i++) {
       const u = Math.random();
@@ -325,33 +494,125 @@ export class CelestialEnvironment {
       positions[i * 3 + 1] = radius * Math.cos(phi);
       positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
 
-      const brightness = 0.45 + Math.random() * 0.55;
-      const tint = Math.random();
-      colors[i * 3] = brightness * (tint > 0.8 ? 1.0 : 0.88);
-      colors[i * 3 + 1] = brightness * 0.92;
-      colors[i * 3 + 2] = brightness * (tint < 0.25 ? 1.0 : 0.86);
+      const bv = -0.25 + Math.random() * 1.75;
+      const [r, g, b] = this._bvToRgb(bv);
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+
+      const weight = Math.pow(Math.random(), 3.2);
+      sizes[i] = 1.6 + weight * 8.0;
+      brightnesses[i] = 0.22 + weight * 1.05;
     }
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geom.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+    geom.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geom.setAttribute('aBrightness', new THREE.BufferAttribute(brightnesses, 1));
+    return geom;
+  }
 
-    const mat = new THREE.PointsMaterial({
-      size: 1.8,
-      sizeAttenuation: false,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
+  _loadMilkyWayBackdrop() {
+    const skyGeom = new THREE.SphereGeometry(CELESTIAL_CONFIG.STARFIELD_RADIUS * 1.04, 64, 48);
+    const skyMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uMap: { value: null },
+        uIntensity: { value: STARMAP_CONFIG.MILKYWAY_INTENSITY },
+      },
+      vertexShader: MILKYWAY_VERTEX_SHADER,
+      fragmentShader: MILKYWAY_FRAGMENT_SHADER,
+      side: THREE.FrontSide,
       depthWrite: false,
     });
 
-    const stars = new THREE.Points(geom, mat);
+    const skyMesh = new THREE.Mesh(skyGeom, skyMat);
+    // Віддзеркалення scale.x = -1 + rotation.y = PI узгоджує панораму NASA SVS (RA=0 у центрі, зростає ліворуч) із 3D-каталогом
+    skyMesh.scale.x = -1;
+    skyMesh.rotation.y = Math.PI;
+    skyMesh.renderOrder = -2;
+    skyMesh.visible = false;
+    skyMesh.name = 'MilkyWayBackdrop';
+    this.celestialSphereGroup.add(skyMesh);
+    this.milkywayMesh = skyMesh;
+
+    const texLoader = new THREE.TextureLoader();
+    texLoader.setCrossOrigin('anonymous');
+
+    const applyTexture = (texture) => {
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.anisotropy = 4;
+      skyMat.uniforms.uMap.value = texture;
+      skyMesh.visible = true;
+    };
+
+    texLoader.load(
+      STARMAP_CONFIG.MILKYWAY_LOCAL_URL,
+      applyTexture,
+      undefined,
+      () => {
+        texLoader.load(STARMAP_CONFIG.MILKYWAY_REMOTE_URL, applyTexture);
+      }
+    );
+  }
+
+  async _fetchCatalogFeatures(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('json') && !url.endsWith('.json')) {
+      throw new Error('Unexpected content type');
+    }
+    const json = await res.json();
+    if (!json || !Array.isArray(json.features)) {
+      throw new Error('Invalid star catalog format');
+    }
+    return json.features;
+  }
+
+  async _createStarfield() {
+    this._loadMilkyWayBackdrop();
+
+    const starMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
+      },
+      vertexShader: STARFIELD_VERTEX_SHADER,
+      fragmentShader: STARFIELD_FRAGMENT_SHADER,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+
+    let geometry = null;
+    try {
+      const features = await this._fetchCatalogFeatures(STARMAP_CONFIG.CATALOG_LOCAL_URL);
+      geometry = this._buildStarGeometryFromCatalog(features);
+    } catch {
+      geometry = this._buildProceduralFallbackStars();
+      this._fetchCatalogFeatures(STARMAP_CONFIG.CATALOG_REMOTE_URL)
+        .then((features) => {
+          if (!this.starPoints) return;
+          const catalogGeom = this._buildStarGeometryFromCatalog(features);
+          this.starPoints.geometry.dispose();
+          this.starPoints.geometry = catalogGeom;
+        })
+        .catch(() => {
+          // Залишаємо процедурний резерв, якщо офлайн і локальний каталог не завантажено
+        });
+    }
+
+    const stars = new THREE.Points(geometry, starMaterial);
     stars.name = 'Starfield';
-    this.scene.add(stars);
+    stars.renderOrder = -1;
+    this.celestialSphereGroup.add(stars);
+    this.starPoints = stars;
   }
 
   _createEarthModel() {
-    this.earthGroup.rotation.z = THREE.MathUtils.degToRad(23.44);
+    this.earthGroup.rotation.z = THREE.MathUtils.degToRad(CELESTIAL_CONFIG.EARTH_AXIAL_TILT_DEG);
 
     const earthGeom = new THREE.SphereGeometry(this.earthRadius, 96, 64);
     this.earthMaterial = new THREE.ShaderMaterial({
@@ -434,7 +695,7 @@ export class CelestialEnvironment {
     this._latLonToDirection(ephemData.subEarthLon, ephemData.subEarthLat, this._earthDir);
 
     const earthDistScale = ephemData.earthDistanceKm
-      ? ephemData.earthDistanceKm / (MOON_CONFIG.RADIUS * 1737.4)
+      ? ephemData.earthDistanceKm / (MOON_CONFIG.RADIUS * MOON_CONFIG.RADIUS_KM)
       : this.earthDistance;
 
     this.earthGroup.position.copy(this._earthDir).multiplyScalar(earthDistScale);

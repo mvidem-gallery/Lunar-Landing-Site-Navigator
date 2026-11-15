@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { PROXY_CONFIG } from './src/config/constants.js';
 
 export default defineConfig({
   server: {
@@ -7,11 +8,20 @@ export default defineConfig({
       ignored: ['**/public/tiles/**', '**/tiles/**'],
     },
     proxy: {
-      '/opm-tiles': {
-        target: 'https://s3.amazonaws.com/opmbuilder/301_moon/tiles/w/hillshaded-albedo',
+      [PROXY_CONFIG.OPM_TILES_PATH]: {
+        target: PROXY_CONFIG.OPM_TILES_TARGET,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/opm-tiles/, '')
-      }
-    }
-  }
+        rewrite: (path) => path.replace(new RegExp(`^${PROXY_CONFIG.OPM_TILES_PATH}`), ''),
+      },
+      [PROXY_CONFIG.HORIZONS_API_PATH]: {
+        target: PROXY_CONFIG.HORIZONS_API_TARGET,
+        changeOrigin: true,
+        rewrite: (path) =>
+          path.replace(
+            new RegExp(`^${PROXY_CONFIG.HORIZONS_API_PATH}`),
+            PROXY_CONFIG.HORIZONS_API_REWRITE_PATH
+          ),
+      },
+    },
+  },
 });

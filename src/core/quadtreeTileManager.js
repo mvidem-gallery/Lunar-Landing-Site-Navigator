@@ -1,275 +1,6 @@
 import * as THREE from 'three';
 import { MOON_CONFIG, MAP_LAYERS, LOD_CONFIG } from '../config/constants.js';
-
-class TileCache {
-  constructor(maxSize = LOD_CONFIG.CACHE_SIZE) {
-    this.maxSize = maxSize;
-    this.cache = new Map();
-    this.pending = new Map();
-    this.failed = new Set();
-    this.resolvedTemplates = new Map();
-    this.resolvingPromises = new Map();
-    this.queue = [];
-    this.activeRequests = 0;
-    this.loader = new THREE.TextureLoader();
-    this.loader.setCrossOrigin('anonymous');
-  }
-
-  clear() {
-    this.queue = [];
-    this.pending.clear();
-    this.failed.clear();
-    for (const tex of this.cache.values()) {
-      tex.dispose();
-    }
-    this.cache.clear();
-  }
-
-  get(key) {
-    if (this.cache.has(key)) {
-      const tex = this.cache.get(key);
-      this.cache.delete(key);
-      this.cache.set(key, tex);
-      return tex;
-    }
-    return null;
-  }
-
-  set(key, texture) {
-    if (this.cache.size >= this.maxSize) {
-      const oldestKey = this.cache.keys().next().value;
-      const oldTex = this.cache.get(oldestKey);
-      if (oldTex) oldTex.dispose();
-      this.cache.delete(oldestKey);
-    }
-    this.cache.set(key, texture);
-  }
-
-  normalizeWmtsTemplate(rawTemplate) {
-    return rawTemplate
-      .replace(/\{Style\}/gi, 'default')
-      .replace(/\{TileMatrixSet\}/gi, 'default028mm')
-      .replace(/\{TileMatrix\}/gi, '{z}')
-      .replace(/\{TileRow\}/gi, '{y}')
-      .replace(/\{TileCol\}/gi, '{x}');
-  }
-
-  async resolveOverlayTemplate(sourceSpec) {
-    if (!sourceSpec || !sourceSpec.isOverlay) return;
-
-    if (this.resolvedTemplates.has(sourceSpec.sourceId)) {
-      return;
-    }
-
-    if (this.resolvingPromises.has(sourceSpec.sourceId)) {
-      await this.resolvingPromises.get(sourceSpec.sourceId);
-      return;
-    }
-
-    const promise = (async () => {
-      try {
-        let capUrl = null;
-
-        // 1. Отримуємо точний productLabel місії Kaguya через параметр q
-        if (sourceSpec.trekDiscoveryQuery) {
-          const searchRes = await fetch(sourceSpec.trekDiscoveryQuery);
-          if (searchRes.ok) {
-            const data = await searchRes.json();
-            const docs = data?.response?.docs || [];
-            // Обираємо глобальну мозаїку Kaguya (виключаючи DEM/Confidence/Apollo)
-            const kaguyaProduct =
-              docs.find(
-                (d) =>
-                  d.productLabel &&
-                  d.productLabel.toLowerCase().includes('kaguya') &&
-                  (d.productCat2 === 'Ortho' || d.productCat2 === 'Mosaic')
-              ) ||
-              docs.find(
-                (d) =>
-                  d.productLabel &&
-                  d.productLabel.toLowerCase().includes('kaguya') &&
-                  !d.productLabel.toLowerCase().includes('dem')
-              );
-
-            if (kaguyaProduct?.productLabel) {
-              capUrl = `https://trek.nasa.gov/tiles/Moon/EQ/${kaguyaProduct.productLabel}/1.0.0/WMTSCapabilities.xml`;
-            }
-          }
-        }
-
-        // 2. Резервний шлях до WMTSCapabilities.xml з базового URL
-        if (!capUrl && sourceSpec.url.includes('trek.nasa.gov')) {
-          const baseEnd = sourceSpec.url.indexOf('/1.0.0/');
-          if (baseEnd !== -1) {
-            capUrl = `${sourceSpec.url.substring(0, baseEnd)}/1.0.0/WMTSCapabilities.xml`;
-          }
-        }
-
-        if (!capUrl) return;
-
-        const response = await fetch(capUrl);
-        if (!response.ok) return;
-
-        const xmlText = await response.text();
-        const xmlDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
-        const resourceUrl = xmlDoc.querySelector('ResourceURL');
-
-        if (resourceUrl) {
-          const rawTemplate = resourceUrl.getAttribute('template');
-          if (rawTemplate) {
-            const normalized = this.normalizeWmtsTemplate(rawTemplate);
-            this.resolvedTemplates.set(sourceSpec.sourceId, normalized);
-          }
-        }
-      } catch {
-        // Використовуємо статичний URL з constants.js у разі мережевої помилки
-      } finally {
-        this.resolvingPromises.delete(sourceSpec.sourceId);
-      }
-    })();
-
-    this.resolvingPromises.set(sourceSpec.sourceId, promise);
-    await promise;
-  }
-
-  requestTile(sourceSpec, z, x, y, priority, onLoad, onError) {
-    const key = `${sourceSpec.sourceId}_${z}_${y}_${x}`;
-
-    if (!sourceSpec || !sourceSpec.url || this.failed.has(key)) {
-      if (onError) onError();
-      return;
-    }
-
-    const cached = this.get(key);
-    if (cached) {
-      onLoad(cached);
-      return;
-    }
-
-    const effectivePriority = sourceSpec.isLocal ? priority - 1000 : priority;
-
-    if (this.pending.has(key)) {
-      const entry = this.pending.get(key);
-      entry.callbacks.push({ onLoad, onError });
-      entry.priority = Math.min(entry.priority, effectivePriority);
-      return;
-    }
-
-    const entry = {
-      key,
-      sourceSpec,
-      z,
-      x,
-      y,
-      priority: effectivePriority,
-      callbacks: [{ onLoad, onError }],
-    };
-
-    this.pending.set(key, entry);
-    this.queue.push(entry);
-    this.processQueue();
-  }
-
-  buildUrl(urlTemplate, z, x, y, isWebMercatorQuad) {
-    let targetX = x;
-    let targetY = y;
-
-    if (isWebMercatorQuad) {
-      // Перетворення з рівнопроміжної сітки вузлів (2^(z+1) x 2^z) у квадратну сітку (2^z x 2^z)
-      targetX = Math.floor(x / 2);
-      // Для S3 opmbuilder (TMS) вісь Y інвертована; для стандартного XYZ — без інверсії
-      if (urlTemplate.includes('opmbuilder')) {
-        const maxRow = Math.pow(2, z) - 1;
-        targetY = maxRow - y;
-      }
-    }
-
-    return urlTemplate
-      .replace('{z}', z)
-      .replace('{x}', targetX)
-      .replace('{y}', targetY);
-  }
-  processQueue() {
-    while (this.activeRequests < LOD_CONFIG.MAX_CONCURRENT_REQUESTS && this.queue.length > 0) {
-      this.queue.sort((a, b) => a.priority - b.priority);
-      const entry = this.queue.shift();
-      this.activeRequests++;
-
-      this.startEntryDownload(entry);
-    }
-  }
-
-  async startEntryDownload(entry) {
-    if (entry.sourceSpec.isOverlay) {
-      await this.resolveOverlayTemplate(entry.sourceSpec);
-    }
-
-    const activeTemplate =
-      this.resolvedTemplates.get(entry.sourceSpec.sourceId) || entry.sourceSpec.url;
-
-    const primaryUrl = this.buildUrl(
-      activeTemplate,
-      entry.z,
-      entry.x,
-      entry.y,
-      entry.sourceSpec.isWebMercatorQuad
-    );
-
-    const handleSuccess = (texture) => {
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.minFilter = THREE.LinearMipmapLinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.anisotropy = 8;
-      texture.wrapS = THREE.ClampToEdgeWrapping;
-      texture.wrapT = THREE.ClampToEdgeWrapping;
-
-      this.set(entry.key, texture);
-      this.pending.delete(entry.key);
-      this.activeRequests--;
-
-      for (const cb of entry.callbacks) {
-        cb.onLoad(texture);
-      }
-      this.processQueue();
-    };
-
-    const handleFinalFailure = () => {
-      this.failed.add(entry.key);
-      this.pending.delete(entry.key);
-      this.activeRequests--;
-
-      for (const cb of entry.callbacks) {
-        if (cb.onError) cb.onError();
-      }
-      this.processQueue();
-    };
-
-    this.loader.load(
-      primaryUrl,
-      handleSuccess,
-      undefined,
-      () => {
-        if (entry.sourceSpec.fallbackUrl) {
-          const fbUrl = this.buildUrl(
-            entry.sourceSpec.fallbackUrl,
-            entry.z,
-            entry.x,
-            entry.y,
-            entry.sourceSpec.isWebMercatorQuad
-          );
-          this.loader.load(fbUrl, handleSuccess, undefined, handleFinalFailure);
-        } else if (entry.sourceSpec.isOverlay) {
-          const altUrl = primaryUrl.endsWith('.jpg')
-            ? primaryUrl.replace(/\.jpg$/, '.png')
-            : primaryUrl.replace(/\.png$/, '.jpg');
-          this.loader.load(altUrl, handleSuccess, undefined, handleFinalFailure);
-        } else {
-          handleFinalFailure();
-        }
-      }
-    );
-  }
-}
+import { TileCache } from './tileCache.js';
 
 class QuadNode {
   constructor(manager, z, x, y, parent = null) {
@@ -476,6 +207,7 @@ export class QuadtreeTileManager {
         url: layer.url,
         fallbackUrl: layer.fallbackUrl ?? null,
         isWebMercatorQuad: Boolean(layer.isWebMercatorQuad),
+        isTms: Boolean(layer.isTms),
         isOverlay: false,
         isLocal: layer.url.startsWith('/') || layer.url.startsWith('./'),
       };
@@ -496,6 +228,7 @@ export class QuadtreeTileManager {
             fallbackUrl: overlay.fallbackUrl ?? null,
             trekDiscoveryQuery: overlay.trekDiscoveryQuery ?? null,
             isWebMercatorQuad: Boolean(overlay.isWebMercatorQuad),
+            isTms: Boolean(overlay.isTms),
             isOverlay: true,
             isLocal: false,
           };
@@ -565,8 +298,11 @@ export class QuadtreeTileManager {
 
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uEarthDirection = this.sharedUniforms.uEarthDirection;
+      shader.uniforms.uSunDirection = this.sharedUniforms.uSunDirection;
       shader.uniforms.uShowEarthDisk = this.sharedUniforms.uShowEarthDisk;
       shader.uniforms.uHorizonThreshold = this.sharedUniforms.uHorizonThreshold;
+      shader.uniforms.uShowIlluminationHeatmap = this.sharedUniforms.uShowIlluminationHeatmap;
+      shader.uniforms.uHeatmapOpacity = this.sharedUniforms.uHeatmapOpacity;
       shader.uniforms.uShowCoordGrid = this.sharedUniforms.uShowCoordGrid;
       shader.uniforms.uGridStepDeg = this.sharedUniforms.uGridStepDeg;
       shader.uniforms.uGridSubStepDeg = this.sharedUniforms.uGridSubStepDeg;
@@ -593,13 +329,35 @@ export class QuadtreeTileManager {
            varying vec3 vWorldSphereNormal;
            varying vec3 vLocalSpherePos;
            uniform vec3 uEarthDirection;
+           uniform vec3 uSunDirection;
            uniform bool uShowEarthDisk;
            uniform float uHorizonThreshold;
+
+           uniform bool uShowIlluminationHeatmap;
+           uniform float uHeatmapOpacity;
 
            uniform bool uShowCoordGrid;
            uniform float uGridStepDeg;
            uniform float uGridSubStepDeg;
            uniform float uGridOpacity;
+
+           vec3 sampleIlluminationHeatmap(float t) {
+             float x = clamp(t, 0.0, 1.0);
+             vec3 c0 = vec3(0.820, 0.102, 0.059);
+             vec3 c1 = vec3(0.961, 0.341, 0.078);
+             vec3 c2 = vec3(0.988, 0.722, 0.161);
+             vec3 c3 = vec3(0.961, 0.961, 0.420);
+             vec3 c4 = vec3(0.451, 0.922, 0.851);
+             vec3 c5 = vec3(0.161, 0.349, 0.961);
+             vec3 c6 = vec3(0.678, 0.180, 0.922);
+
+             if (x < 0.25) return mix(c0, c1, x / 0.25);
+             if (x < 0.52) return mix(c1, c2, (x - 0.25) / 0.27);
+             if (x < 0.74) return mix(c2, c3, (x - 0.52) / 0.22);
+             if (x < 0.86) return mix(c3, c4, (x - 0.74) / 0.12);
+             if (x < 0.95) return mix(c4, c5, (x - 0.86) / 0.09);
+             return mix(c5, c6, (x - 0.95) / 0.05);
+           }
 
            float gridLineMask(float angleDeg, float stepDeg, float thicknessPx) {
              float halfStep = stepDeg * 0.5;
@@ -648,7 +406,13 @@ export class QuadtreeTileManager {
         )
         .replace(
           '#include <dithering_fragment>',
-          `if (uShowEarthDisk) {
+          `if (uShowIlluminationHeatmap) {
+             float sunCos = clamp(dot(normalize(vWorldSphereNormal), normalize(uSunDirection)), 0.0, 1.0);
+             vec3 heatColor = sampleIlluminationHeatmap(sunCos);
+             gl_FragColor.rgb = mix(gl_FragColor.rgb, heatColor, uHeatmapOpacity);
+           }
+
+           if (uShowEarthDisk) {
              float cosAngle = dot(normalize(vWorldSphereNormal), normalize(uEarthDirection));
              if (cosAngle >= uHorizonThreshold) {
                vec3 diskTint = vec3(0.12, 0.56, 1.0);

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOON_CONFIG } from '../config/constants.js';
+import { MOON_CONFIG, OVERLAY_CONFIG } from '../config/constants.js';
 import { QuadtreeTileManager } from './quadtreeTileManager.js';
 
 export class MoonBuilder {
@@ -14,12 +14,15 @@ export class MoonBuilder {
 
     const customUniforms = {
       uEarthDirection: { value: new THREE.Vector3(1, 0, 0) },
+      uSunDirection: { value: new THREE.Vector3(1, 0, 0) },
       uShowEarthDisk: { value: true },
-      uHorizonThreshold: { value: 0.0045 },
+      uHorizonThreshold: { value: MOON_CONFIG.HORIZON_THRESHOLD },
+      uShowIlluminationHeatmap: { value: false },
+      uHeatmapOpacity: { value: OVERLAY_CONFIG.HEATMAP_OPACITY },
       uShowCoordGrid: { value: false },
-      uGridStepDeg: { value: 15.0 },
-      uGridSubStepDeg: { value: 5.0 },
-      uGridOpacity: { value: 0.65 },
+      uGridStepDeg: { value: OVERLAY_CONFIG.GRID_DEFAULT_STEP_DEG },
+      uGridSubStepDeg: { value: OVERLAY_CONFIG.GRID_DEFAULT_SUB_STEP_DEG },
+      uGridOpacity: { value: OVERLAY_CONFIG.GRID_DEFAULT_OPACITY },
     };
 
     // Невидимий меш-колайдер: використовується виключно для Raycaster без рендерингу розмитої текстури

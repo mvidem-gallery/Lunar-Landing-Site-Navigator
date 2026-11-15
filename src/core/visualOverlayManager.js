@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MOON_CONFIG } from '../config/constants.js';
+import { MOON_CONFIG, OVERLAY_CONFIG } from '../config/constants.js';
 
 export class VisualOverlayManager {
   constructor(sharedUniforms = {}, lightingSystem = null, parentGroup = null) {
@@ -9,23 +9,32 @@ export class VisualOverlayManager {
     if (!this.uniforms.uEarthDirection) {
       this.uniforms.uEarthDirection = { value: new THREE.Vector3(1, 0, 0) };
     }
+    if (!this.uniforms.uSunDirection) {
+      this.uniforms.uSunDirection = { value: new THREE.Vector3(1, 0, 0) };
+    }
     if (!this.uniforms.uShowEarthDisk) {
       this.uniforms.uShowEarthDisk = { value: true };
     }
     if (!this.uniforms.uHorizonThreshold) {
-      this.uniforms.uHorizonThreshold = { value: 0.0 };
+      this.uniforms.uHorizonThreshold = { value: MOON_CONFIG.HORIZON_THRESHOLD };
+    }
+    if (!this.uniforms.uShowIlluminationHeatmap) {
+      this.uniforms.uShowIlluminationHeatmap = { value: false };
+    }
+    if (!this.uniforms.uHeatmapOpacity) {
+      this.uniforms.uHeatmapOpacity = { value: OVERLAY_CONFIG.HEATMAP_OPACITY };
     }
     if (!this.uniforms.uShowCoordGrid) {
       this.uniforms.uShowCoordGrid = { value: false };
     }
     if (!this.uniforms.uGridStepDeg) {
-      this.uniforms.uGridStepDeg = { value: 15.0 };
+      this.uniforms.uGridStepDeg = { value: OVERLAY_CONFIG.GRID_DEFAULT_STEP_DEG };
     }
     if (!this.uniforms.uGridSubStepDeg) {
-      this.uniforms.uGridSubStepDeg = { value: 5.0 };
+      this.uniforms.uGridSubStepDeg = { value: OVERLAY_CONFIG.GRID_DEFAULT_SUB_STEP_DEG };
     }
     if (!this.uniforms.uGridOpacity) {
-      this.uniforms.uGridOpacity = { value: 0.65 };
+      this.uniforms.uGridOpacity = { value: OVERLAY_CONFIG.GRID_DEFAULT_OPACITY };
     }
 
     this.gridLabelsGroup = new THREE.Group();
@@ -61,6 +70,12 @@ export class VisualOverlayManager {
   setSolarLightingEnabled(isEnabled) {
     if (this.lightingSystem && typeof this.lightingSystem.setSolarLightingEnabled === 'function') {
       this.lightingSystem.setSolarLightingEnabled(Boolean(isEnabled));
+    }
+  }
+
+  setIlluminationHeatmapVisible(isVisible) {
+    if (this.uniforms.uShowIlluminationHeatmap) {
+      this.uniforms.uShowIlluminationHeatmap.value = Boolean(isVisible);
     }
   }
 

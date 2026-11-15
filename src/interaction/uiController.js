@@ -1,7 +1,4 @@
-import { LOD_CONFIG, MAP_LAYERS } from '../config/constants.js';
-
-const LUNAR_RADIUS_METERS = 1737400;
-const TILE_SIZE_PX = 256;
+import { LOD_CONFIG, MAP_LAYERS, MOON_CONFIG } from '../config/constants.js';
 
 export class UIController {
   constructor() {
@@ -128,8 +125,8 @@ export class UIController {
     }
 
     const cols = isWebMercator ? Math.pow(2, z) : Math.pow(2, z + 1);
-    const circumferenceMeters = 2 * Math.PI * LUNAR_RADIUS_METERS;
-    const metersPerPixel = circumferenceMeters / (cols * TILE_SIZE_PX);
+    const circumferenceMeters = 2 * Math.PI * MOON_CONFIG.RADIUS_METERS;
+    const metersPerPixel = circumferenceMeters / (cols * LOD_CONFIG.TILE_SIZE_PX);
 
     if (metersPerPixel >= 100) {
       return `${Math.round(metersPerPixel)} м/піксель`;

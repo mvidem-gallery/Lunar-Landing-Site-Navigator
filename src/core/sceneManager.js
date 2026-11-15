@@ -9,7 +9,7 @@ export class SceneManager {
 
     this.initialDistance = 3.5;
     this.referenceAltitude = this.initialDistance - MOON_CONFIG.RADIUS;
-    this.moonRadiusKm = 1737.4;
+    this.moonRadiusKm = MOON_CONFIG.RADIUS_KM;
 
     this.camera = new THREE.PerspectiveCamera(
       45,
