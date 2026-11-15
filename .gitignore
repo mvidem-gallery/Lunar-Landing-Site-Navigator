@@ -3,3 +3,6 @@ node_modules/
 nebo.jpg
 cache/
 archive/
+dist/
+.lunar-cache/
+lunar-horizon-latest/lunar-horizon/worker/index.js

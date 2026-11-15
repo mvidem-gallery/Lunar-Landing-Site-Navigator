@@ -1,0 +1,10 @@
+{
+  "name": "lunar-horizon",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/bundle.mjs",
+    "test": "node --test tests/*.test.js"
+  }
+}
