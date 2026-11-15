@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { VIEW_MODES } from '../config/constants.js';
 import './surfaceContextMenu.css';
 
 export class SurfaceContextMenu {
@@ -9,6 +10,10 @@ export class SurfaceContextMenu {
    * @param {Function} options.getCurrentDate
    * @param {Function} [options.getSunDirection]
    * @param {Function} [options.getEarthDirection]
+   * @param {Function} [options.getMoonQuaternion]
+   * @param {Function} [options.getViewMode]
+   * @param {Function} [options.getRightClickTarget]
+   * @param {Function} [options.onFocusBody]
    * @param {Function} options.onLandTo
    * @param {Function} [options.onSaveLandingSite]
    * @param {Function} [options.onAddToMission]
@@ -20,6 +25,10 @@ export class SurfaceContextMenu {
       getCurrentDate,
       getSunDirection,
       getEarthDirection,
+      getMoonQuaternion,
+      getViewMode,
+      getRightClickTarget,
+      onFocusBody,
       onLandTo,
       onSaveLandingSite,
       onAddToMission,
@@ -30,6 +39,10 @@ export class SurfaceContextMenu {
     this.getCurrentDate = getCurrentDate;
     this.getSunDirection = getSunDirection;
     this.getEarthDirection = getEarthDirection;
+    this.getMoonQuaternion = getMoonQuaternion;
+    this.getViewMode = getViewMode;
+    this.getRightClickTarget = getRightClickTarget;
+    this.onFocusBody = onFocusBody;
     this.onLandTo = onLandTo;
     this.onSaveLandingSite = onSaveLandingSite;
     this.onAddToMission = onAddToMission;
@@ -50,7 +63,7 @@ export class SurfaceContextMenu {
     this.menuEl.innerHTML = `
       <div class="lunar-context-menu-header">
         <span data-field="coords">0.000°E  0.000°N</span>
-        <span class="lunar-context-menu-tag">TARGET</span>
+        <span class="lunar-context-menu-tag" data-field="tag">TARGET</span>
       </div>
       <div class="lunar-context-telemetry">
         <div class="lunar-telemetry-row">
@@ -69,6 +82,18 @@ export class SurfaceContextMenu {
           <span class="lunar-telemetry-val" data-field="earth-los">VISIBLE</span>
         </div>
       </div>
+      <button type="button" class="lunar-context-menu-item" data-action="focus-earth">
+        <span>Focus on Earth</span>
+        <span class="lunar-context-menu-item-icon">🌍</span>
+      </button>
+      <button type="button" class="lunar-context-menu-item" data-action="focus-moon">
+        <span>Focus on Moon</span>
+        <span class="lunar-context-menu-item-icon">🌑</span>
+      </button>
+      <button type="button" class="lunar-context-menu-item" data-action="focus-system">
+        <span>Frame Earth–Moon System</span>
+        <span class="lunar-context-menu-item-icon">⚖</span>
+      </button>
       <button type="button" class="lunar-context-menu-item" data-action="add-to-mission">
         <span>Add to Active Mission</span>
         <span class="lunar-context-menu-item-icon">＋</span>
@@ -84,10 +109,15 @@ export class SurfaceContextMenu {
     `;
 
     this.coordsEl = this.menuEl.querySelector('[data-field="coords"]');
+    this.tagEl = this.menuEl.querySelector('[data-field="tag"]');
+    this.telemetryEl = this.menuEl.querySelector('.lunar-context-telemetry');
     this.sunAngleEl = this.menuEl.querySelector('[data-field="sun-angle"]');
     this.illuminationEl = this.menuEl.querySelector('[data-field="illumination"]');
     this.illumBarEl = this.menuEl.querySelector('[data-field="illum-bar"]');
     this.earthLosEl = this.menuEl.querySelector('[data-field="earth-los"]');
+    this.focusEarthBtn = this.menuEl.querySelector('[data-action="focus-earth"]');
+    this.focusMoonBtn = this.menuEl.querySelector('[data-action="focus-moon"]');
+    this.focusSystemBtn = this.menuEl.querySelector('[data-action="focus-system"]');
     this.addToMissionBtn = this.menuEl.querySelector('[data-action="add-to-mission"]');
     this.saveSiteBtn = this.menuEl.querySelector('[data-action="save-landing-site"]');
     this.landBtn = this.menuEl.querySelector('[data-action="land-to"]');
@@ -109,6 +139,13 @@ export class SurfaceContextMenu {
 
   _evaluateTelemetry(lat, lon) {
     this._computeSurfaceNormal(lat, lon, this._surfaceNormal);
+
+    if (typeof this.getMoonQuaternion === 'function') {
+      const moonQuat = this.getMoonQuaternion();
+      if (moonQuat) {
+        this._surfaceNormal.applyQuaternion(moonQuat).normalize();
+      }
+    }
 
     let sunElevDeg = 0;
     let illumPercent = 0;
@@ -160,29 +197,86 @@ export class SurfaceContextMenu {
         return;
       }
 
+      const viewMode = this.getViewMode ? this.getViewMode() : VIEW_MODES.LUNAR;
+      const isCislunar = viewMode === VIEW_MODES.CISLUNAR || viewMode === 'CISLUNAR_VIEW';
+      const hitBody = this.getRightClickTarget ? this.getRightClickTarget(e.clientX, e.clientY) : null;
       const coords = this.getHoveredCoords ? this.getHoveredCoords() : null;
-      if (!coords || typeof coords.lat !== 'number' || typeof coords.lon !== 'number') {
-        this.hide();
+      const hasCoords = Boolean(coords && typeof coords.lat === 'number' && typeof coords.lon === 'number');
+
+      if (hitBody === 'EARTH') {
+        this.activeTarget = {
+          mode: 'body',
+          bodyType: 'EARTH',
+          headerLabel: 'PLANET EARTH',
+          tagLabel: 'BODY',
+          showTelemetry: false,
+          showFocusEarth: true,
+          showFocusMoon: false,
+          showFocusSystem: isCislunar,
+          showLunarActions: false,
+          showLandTo: false,
+        };
+        this.show(e.clientX, e.clientY, this.activeTarget);
         return;
       }
 
-      const currentDate = this.getCurrentDate ? this.getCurrentDate() : new Date();
-      const telemetry = this._evaluateTelemetry(coords.lat, coords.lon);
+      if (hitBody === 'MOON' || (!hitBody && hasCoords)) {
+        if (!isCislunar && !hasCoords) {
+          this.hide();
+          return;
+        }
+        const currentDate = this.getCurrentDate ? this.getCurrentDate() : new Date();
+        const telemetry = hasCoords ? this._evaluateTelemetry(coords.lat, coords.lon) : null;
 
-      this.activeTarget = {
-        lon: Number(coords.lon.toFixed(5)),
-        lat: Number(coords.lat.toFixed(5)),
-        date: new Date(currentDate.getTime()),
-        isoDate: currentDate.toISOString(),
-        ...telemetry,
-      };
+        this.activeTarget = {
+          mode: hasCoords ? 'surface' : 'body',
+          bodyType: 'MOON',
+          headerLabel: hasCoords ? null : 'MOON · LUNA',
+          tagLabel: isCislunar ? 'CISLUNAR' : 'TARGET',
+          lon: hasCoords ? Number(coords.lon.toFixed(5)) : null,
+          lat: hasCoords ? Number(coords.lat.toFixed(5)) : null,
+          date: new Date(currentDate.getTime()),
+          isoDate: currentDate.toISOString(),
+          ...(telemetry || {}),
+          showTelemetry: hasCoords,
+          showFocusEarth: false,
+          showFocusMoon: isCislunar,
+          showFocusSystem: isCislunar,
+          showLunarActions: hasCoords,
+          // Функція Land to недоступна у режимі перегляду траєкторії
+          showLandTo: !isCislunar && hasCoords,
+        };
+        this.show(e.clientX, e.clientY, this.activeTarget);
+        return;
+      }
 
-      this.show(e.clientX, e.clientY, this.activeTarget);
+      if (!hasCoords) {
+        this.hide();
+        return;
+      }
+    });
+
+    this.focusEarthBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onFocusBody?.('EARTH');
+      this.hide();
+    });
+
+    this.focusMoonBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onFocusBody?.('MOON');
+      this.hide();
+    });
+
+    this.focusSystemBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onFocusBody?.('SYSTEM');
+      this.hide();
     });
 
     this.addToMissionBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.activeTarget && typeof this.onAddToMission === 'function') {
+      if (this.activeTarget?.showLunarActions && typeof this.onAddToMission === 'function') {
         this.onAddToMission({ ...this.activeTarget });
       }
       this.hide();
@@ -190,7 +284,7 @@ export class SurfaceContextMenu {
 
     this.landBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.activeTarget && typeof this.onLandTo === 'function') {
+      if (this.activeTarget?.showLandTo && typeof this.onLandTo === 'function') {
         this.onLandTo({ ...this.activeTarget });
       }
       this.hide();
@@ -198,7 +292,7 @@ export class SurfaceContextMenu {
 
     this.saveSiteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.activeTarget && typeof this.onSaveLandingSite === 'function') {
+      if (this.activeTarget?.showLunarActions && typeof this.onSaveLandingSite === 'function') {
         this.onSaveLandingSite({ ...this.activeTarget });
       }
       this.hide();
@@ -247,36 +341,53 @@ export class SurfaceContextMenu {
   show(clientX, clientY, target) {
     this._hasEnteredMenu = false;
 
-    const latDir = target.lat >= 0 ? 'N' : 'S';
-    const lonDir = target.lon >= 0 ? 'E' : 'W';
-    this.coordsEl.textContent = `${Math.abs(target.lon).toFixed(3)}°${lonDir}  ${Math.abs(target.lat).toFixed(3)}°${latDir}`;
-
-    const sunSign = target.sunElevDeg >= 0 ? '+' : '';
-    this.sunAngleEl.textContent = `${sunSign}${target.sunElevDeg.toFixed(1)}°`;
-
-    this.illuminationEl.className = 'lunar-telemetry-val';
-    if (target.sunElevDeg > 3.0) {
-      this.illuminationEl.textContent = `${target.illumPercent}% (DAY)`;
-      this.illuminationEl.classList.add('sun-day');
-    } else if (target.sunElevDeg >= -6.0) {
-      this.illuminationEl.textContent = `${target.illumPercent}% (TWILIGHT)`;
-      this.illuminationEl.classList.add('sun-twilight');
-    } else {
-      this.illuminationEl.textContent = `0% (NIGHT)`;
-      this.illuminationEl.classList.add('sun-night');
+    if (target.tagLabel && this.tagEl) {
+      this.tagEl.textContent = target.tagLabel;
     }
 
-    this.illumBarEl.style.width = `${target.illumPercent}%`;
+    if (target.showTelemetry && typeof target.lat === 'number' && typeof target.lon === 'number') {
+      const latDir = target.lat >= 0 ? 'N' : 'S';
+      const lonDir = target.lon >= 0 ? 'E' : 'W';
+      this.coordsEl.textContent = `${Math.abs(target.lon).toFixed(3)}°${lonDir}  ${Math.abs(target.lat).toFixed(3)}°${latDir}`;
+      this.telemetryEl.style.display = 'flex';
 
-    const earthSign = target.earthElevDeg >= 0 ? '+' : '';
-    this.earthLosEl.className = 'lunar-telemetry-val';
-    if (target.hasEarthContact) {
-      this.earthLosEl.textContent = `YES (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
-      this.earthLosEl.classList.add('earth-visible');
+      const sunSign = target.sunElevDeg >= 0 ? '+' : '';
+      this.sunAngleEl.textContent = `${sunSign}${target.sunElevDeg.toFixed(1)}°`;
+
+      this.illuminationEl.className = 'lunar-telemetry-val';
+      if (target.sunElevDeg > 3.0) {
+        this.illuminationEl.textContent = `${target.illumPercent}% (DAY)`;
+        this.illuminationEl.classList.add('sun-day');
+      } else if (target.sunElevDeg >= -6.0) {
+        this.illuminationEl.textContent = `${target.illumPercent}% (TWILIGHT)`;
+        this.illuminationEl.classList.add('sun-twilight');
+      } else {
+        this.illuminationEl.textContent = `0% (NIGHT)`;
+        this.illuminationEl.classList.add('sun-night');
+      }
+
+      this.illumBarEl.style.width = `${target.illumPercent}%`;
+
+      const earthSign = target.earthElevDeg >= 0 ? '+' : '';
+      this.earthLosEl.className = 'lunar-telemetry-val';
+      if (target.hasEarthContact) {
+        this.earthLosEl.textContent = `YES (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
+        this.earthLosEl.classList.add('earth-visible');
+      } else {
+        this.earthLosEl.textContent = `NONE (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
+        this.earthLosEl.classList.add('earth-hidden');
+      }
     } else {
-      this.earthLosEl.textContent = `NONE (${earthSign}${target.earthElevDeg.toFixed(1)}°)`;
-      this.earthLosEl.classList.add('earth-hidden');
+      this.coordsEl.textContent = target.headerLabel || 'CELESTIAL BODY';
+      this.telemetryEl.style.display = 'none';
     }
+
+    this.focusEarthBtn.style.display = target.showFocusEarth ? 'flex' : 'none';
+    this.focusMoonBtn.style.display = target.showFocusMoon ? 'flex' : 'none';
+    this.focusSystemBtn.style.display = target.showFocusSystem ? 'flex' : 'none';
+    this.addToMissionBtn.style.display = target.showLunarActions ? 'flex' : 'none';
+    this.saveSiteBtn.style.display = target.showLunarActions ? 'flex' : 'none';
+    this.landBtn.style.display = target.showLandTo ? 'flex' : 'none';
 
     this.menuEl.classList.add('visible');
 

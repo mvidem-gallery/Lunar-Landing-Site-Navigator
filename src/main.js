@@ -14,7 +14,8 @@ import { RulerTool } from './interaction/rulerTool.js';
 import { LandingSitesMenu } from './interaction/landingSitesMenu.js';
 import { MissionPanel } from './interaction/missionPanel.js';
 import { TimelineController } from './interaction/timelineController.js';
-import { MAP_LAYERS, VIEW_MODES } from './config/constants.js';
+import { LunarHorizonModal } from './lunar-horizon/lunarHorizonModal.js';
+import { MAP_LAYERS, TRAJECTORY_CONFIG, VIEW_MODES } from './config/constants.js';
 
 async function bootstrap() {
   const statusEl = document.getElementById('solar-status');
@@ -23,6 +24,7 @@ async function bootstrap() {
     const sceneManager = new SceneManager(container);
     const lightingSystem = new LightingSystem(sceneManager.scene);
     const celestialEnv = new CelestialEnvironment(sceneManager.scene);
+    celestialEnv.setTrajectoryPlaying(false);
     const uiController = new UIController();
 
     const fontsReady =
@@ -34,9 +36,146 @@ async function bootstrap() {
       fontsReady,
     ]);
     sceneManager.scene.add(moonGroup);
+    celestialEnv.setMoonGroup(moonGroup);
 
     const { baseMesh, uniforms, lodManager } = moonGroup.userData || {};
     const overlayManager = new VisualOverlayManager(uniforms, lightingSystem, moonGroup);
+
+    let latestHoverData = null;
+    let latestEphemData = null;
+    let latestTimelineEphemData = null;
+    let latestPhysicalState = null;
+    let currentSimulationDate = new Date();
+    const currentSunDir = new THREE.Vector3(1, 0, 0);
+    const currentEarthDir = new THREE.Vector3(1, 0, 0);
+    const tmpEarthPos = new THREE.Vector3();
+    const tmpMoonPos = new THREE.Vector3();
+    let lastTrajectoryHudSyncMs = 0;
+
+    let timelineController = null;
+    let savedLunarTimelineState = null;
+    let trajectoryPlaybackActive = true;
+    let trajectorySpeedLabel = '3h/s';
+    let trajectorySpanMs = null;
+
+    function isTrajectoryTimelineActive() {
+      return celestialEnv.viewMode === VIEW_MODES.CISLUNAR && Boolean(celestialEnv.getTrajectoryInfo());
+    }
+
+    function setTrajectoryTimeFromDate(date) {
+      const info = celestialEnv.getTrajectoryInfo();
+      if (!info || !(date instanceof Date)) return;
+      const startMs = info.meta.launchTimestampMs ?? currentSimulationDate.getTime();
+      const t_s = (date.getTime() - startMs) / 1000;
+      celestialEnv.setTrajectoryTime(t_s);
+    }
+
+    function syncTimelineWithMode(mode, { resetToStart = false } = {}) {
+      if (!timelineController) return;
+      const info = celestialEnv.getTrajectoryInfo();
+      if (mode === VIEW_MODES.CISLUNAR && info) {
+        if (!savedLunarTimelineState) {
+          savedLunarTimelineState = {
+            date: new Date(timelineController.currentDate.getTime()),
+            spanMs: timelineController.spanMs,
+            speedIndex: timelineController.speedIndex,
+            isPlaying: timelineController.isPlaying,
+          };
+        }
+        const startMs = info.meta.launchTimestampMs ?? currentSimulationDate.getTime();
+        const durationMs = Math.max(0, (info.meta.durationSec ?? 0) * 1000);
+        const endMs = startMs + durationMs;
+        const phases = (info.segments || []).map((seg) => ({
+          startMs: startMs + seg.tStart * 1000,
+          endMs: startMs + seg.tEnd * 1000,
+          phase: seg.phase,
+          isCompressed: Boolean(seg.isCompressed),
+          colorCss: TRAJECTORY_CONFIG.PHASES[seg.phase]?.css || '#34d399',
+        }));
+        const events = (info.events || [])
+          .filter((ev) => ev.isMajor)
+          .map((ev) => ({
+            name: ev.name,
+            ms: startMs + ev.t_s * 1000,
+            colorCss: TRAJECTORY_CONFIG.PHASES[ev.phase]?.css || '#38bdf8',
+          }));
+
+        timelineController.setTrajectoryWindow({ startMs, endMs, phases, events });
+        const targetSpanMs =
+          trajectorySpanMs ??
+          Math.max(
+            4 * 3600 * 1000,
+            Math.min(timelineController.maxSpanMs, durationMs > 0 ? durationMs * 1.25 : 3 * 86400 * 1000)
+          );
+        timelineController.setSpanMs(targetSpanMs);
+        timelineController.setSpeedByLabel(trajectorySpeedLabel);
+
+        const tSec = resetToStart ? (info.meta.tStart ?? 0) : (info.currentTimeSec ?? 0);
+        timelineController.setDate(new Date(startMs + tSec * 1000), false);
+        if (trajectoryPlaybackActive) {
+          timelineController.play();
+        } else {
+          timelineController.pause();
+        }
+        uiController.setTrajectoryPlayingUI(timelineController.isPlaying);
+      } else {
+        if (savedLunarTimelineState) {
+          trajectoryPlaybackActive = timelineController.isPlaying;
+          trajectorySpeedLabel = timelineController.getSpeedLabel();
+          trajectorySpanMs = timelineController.spanMs;
+          timelineController.pause();
+          timelineController.setTrajectoryWindow(null);
+          timelineController.setSpanMs(savedLunarTimelineState.spanMs);
+          timelineController.setSpeedIndex(savedLunarTimelineState.speedIndex);
+          timelineController.setDate(savedLunarTimelineState.date, false);
+          if (savedLunarTimelineState.isPlaying) {
+            timelineController.play();
+          }
+          savedLunarTimelineState = null;
+        } else {
+          timelineController.setTrajectoryWindow(null);
+        }
+      }
+    }
+
+    celestialEnv.onTrajectoryLoaded((info) => {
+      uiController.updateTrajectoryInfo(info);
+      if (celestialEnv.viewMode === VIEW_MODES.CISLUNAR) {
+        trajectorySpanMs = null;
+        syncTimelineWithMode(VIEW_MODES.CISLUNAR, { resetToStart: true });
+      }
+    });
+    celestialEnv.onTrajectoryTelemetryTick((sample) => {
+      uiController.updateTrajectoryTelemetry(sample);
+    });
+
+    uiController.onTrajectoryToggle((visible) => {
+      celestialEnv.setTrajectoryVisible(visible);
+    });
+    uiController.onTrajectoryPlayPause((playing) => {
+      trajectoryPlaybackActive = playing;
+      if (isTrajectoryTimelineActive() && timelineController) {
+        if (playing) timelineController.play();
+        else timelineController.pause();
+      } else {
+        celestialEnv.setTrajectoryPlaying(playing);
+      }
+    });
+    uiController.onTrajectoryScrub((progress) => {
+      const info = celestialEnv.getTrajectoryInfo();
+      if (!info) return;
+      const tStart = info.meta.tStart ?? 0;
+      const duration = info.meta.durationSec ?? 0;
+      if (isTrajectoryTimelineActive() && timelineController) {
+        const startMs = info.meta.launchTimestampMs ?? currentSimulationDate.getTime();
+        timelineController.setDate(new Date(startMs + (tStart + duration * progress) * 1000), false);
+      } else {
+        celestialEnv.setTrajectoryTime(tStart + duration * progress);
+      }
+    });
+    uiController.onTrajectoryFileLoad((jsonDoc) => {
+      celestialEnv.setTrajectoryDocument(jsonDoc);
+    });
 
     function setViewMode(mode, options = {}) {
       const normalized =
@@ -47,6 +186,10 @@ async function bootstrap() {
       if (lodManager) {
         lodManager.setViewMode(normalized);
       }
+      syncTimelineWithMode(normalized);
+      if (normalized === VIEW_MODES.LUNAR && latestTimelineEphemData) {
+        applyEphemerisToScene(latestTimelineEphemData, currentSimulationDate);
+      }
       sceneManager.setViewMode(normalized, options);
       uiController.setViewModeUI(normalized);
     }
@@ -56,6 +199,10 @@ async function bootstrap() {
       if (lodManager) {
         lodManager.setViewMode(mode);
       }
+      syncTimelineWithMode(mode);
+      if (mode === VIEW_MODES.LUNAR && latestTimelineEphemData) {
+        applyEphemerisToScene(latestTimelineEphemData, currentSimulationDate);
+      }
       uiController.setViewModeUI(mode);
     });
 
@@ -63,18 +210,28 @@ async function bootstrap() {
       setViewMode(mode);
     });
 
-    let latestHoverData = null;
-    let latestEphemData = null;
-    let currentSimulationDate = new Date();
-    const currentSunDir = new THREE.Vector3(1, 0, 0);
-    const currentEarthDir = new THREE.Vector3(1, 0, 0);
+    uiController.onCislunarFocusChange((focus) => {
+      if (sceneManager.viewMode !== VIEW_MODES.CISLUNAR) {
+        setViewMode(VIEW_MODES.CISLUNAR, { focus });
+      } else {
+        sceneManager.setCislunarFocus(focus, { animate: true });
+      }
+    });
+
+    sceneManager.onCislunarFocusChange((focus) => {
+      uiController.setCislunarFocusUI(focus);
+    });
 
     const celestialTooltip = new CelestialTooltip();
+    const lunarHorizonModal = new LunarHorizonModal();
+    if (!window.SurfaceRendererBridge) {
+      window.SurfaceRendererBridge = lunarHorizonModal;
+    }
 
     let missionPanel = null;
 
     const rulerTool = new RulerTool({
-      scene: sceneManager.scene,
+      scene: moonGroup,
       camera: sceneManager.camera,
       domElement: container,
       toggleButton: document.getElementById('ruler-toggle-btn'),
@@ -100,7 +257,7 @@ async function bootstrap() {
 
     missionPanel = new MissionPanel({
       container: document.getElementById('mission-panel-slot'),
-      scene: sceneManager.scene,
+      scene: moonGroup,
       camera: sceneManager.camera,
       onFlyTo: (lat, lon, zoom) => {
         sceneManager.flyToCoordinates(lat, lon, zoom);
@@ -126,7 +283,7 @@ async function bootstrap() {
     });
 
     const landingSitesMenu = new LandingSitesMenu({
-      scene: sceneManager.scene,
+      scene: moonGroup,
       camera: sceneManager.camera,
       mountContainer: document.getElementById('sites-drawer-slot'),
       onFlyToSite: (site) => {
@@ -190,11 +347,83 @@ async function bootstrap() {
       );
     }
 
+    container.addEventListener('dblclick', (e) => {
+      const hitBody = raycastController.getBodyAtClientPos(e.clientX, e.clientY);
+      if (!hitBody) return;
+      if (hitBody === 'EARTH') {
+        if (sceneManager.viewMode !== VIEW_MODES.CISLUNAR) {
+          setViewMode(VIEW_MODES.CISLUNAR, { focus: 'EARTH' });
+        } else {
+          sceneManager.setCislunarFocus('EARTH', { animate: true });
+        }
+      } else if (hitBody === 'MOON' && sceneManager.viewMode === VIEW_MODES.CISLUNAR) {
+        sceneManager.setCislunarFocus('MOON', { animate: true });
+      }
+    });
+
+    celestialEnv.onPhysicalStateChange((phys) => {
+      latestPhysicalState = phys;
+      currentSunDir.set(phys.sunDirScene[0], phys.sunDirScene[1], phys.sunDirScene[2]).normalize();
+      currentEarthDir
+        .set(phys.earthDirFromMoonWorld[0], phys.earthDirFromMoonWorld[1], phys.earthDirFromMoonWorld[2])
+        .normalize();
+
+      lightingSystem.sunVector.copy(currentSunDir);
+      lightingSystem.sunLight.position.copy(currentSunDir).multiplyScalar(50);
+
+      if (uniforms && uniforms.uSunDirection) {
+        uniforms.uSunDirection.value.copy(currentSunDir);
+      }
+      if (uniforms && uniforms.uEarthDirection) {
+        uniforms.uEarthDirection.value.copy(currentEarthDir);
+      }
+      raycastController.setEarthDirection(currentEarthDir);
+
+      tmpEarthPos.set(phys.earthPositionScene[0], phys.earthPositionScene[1], phys.earthPositionScene[2]);
+      tmpMoonPos.set(phys.moonPositionScene[0], phys.moonPositionScene[1], phys.moonPositionScene[2]);
+      sceneManager.setCislunarBodyPositions(tmpEarthPos, tmpMoonPos);
+
+      const trajEphem = {
+        source: 'Trajectory DE440 / ITRF93',
+        subSolarLat: phys.subSolarLatDeg,
+        subSolarLon: phys.subSolarLonDeg,
+        subEarthLat: phys.subEarthLatDeg,
+        subEarthLon: phys.subEarthLonDeg,
+        earthDistanceKm: phys.moonOrbitRadiusKm,
+      };
+      latestEphemData = trajEphem;
+      const nowMs = performance.now();
+      if (nowMs - lastTrajectoryHudSyncMs >= 120) {
+        lastTrajectoryHudSyncMs = nowMs;
+        uiController.updateSolarInfo(trajEphem);
+      }
+    });
+
+    celestialEnv
+      .loadTrajectory(TRAJECTORY_CONFIG.DEFAULT_URL)
+      .catch((err) => {
+        console.warn('Default cislunar trajectory preload skipped:', err?.message || err);
+        uiController.setTrajectoryError('Trajectory not loaded — use "Load JSON"');
+      });
+
     new SurfaceContextMenu(container, {
       getHoveredCoords: () => latestHoverData,
-      getCurrentDate: () => currentSimulationDate,
+      getCurrentDate: () =>
+        celestialEnv.viewMode === VIEW_MODES.CISLUNAR && latestPhysicalState?.utcTimestampMs
+          ? new Date(latestPhysicalState.utcTimestampMs)
+          : currentSimulationDate,
       getSunDirection: () => currentSunDir,
       getEarthDirection: () => currentEarthDir,
+      getMoonQuaternion: () => moonGroup.quaternion,
+      getViewMode: () => sceneManager.viewMode,
+      getRightClickTarget: (clientX, clientY) => raycastController.getBodyAtClientPos(clientX, clientY),
+      onFocusBody: (focus) => {
+        if (sceneManager.viewMode !== VIEW_MODES.CISLUNAR) {
+          setViewMode(VIEW_MODES.CISLUNAR, { focus });
+        } else {
+          sceneManager.setCislunarFocus(focus, { animate: true });
+        }
+      },
       onAddToMission: (targetData) => {
         missionPanel.addPointToActiveMission({
           name: `Point ${targetData.lat.toFixed(2)}°, ${targetData.lon.toFixed(2)}°`,
@@ -209,6 +438,7 @@ async function bootstrap() {
         landingSitesMenu.promptAndSaveTarget(targetData);
       },
       onLandTo: (targetData) => {
+        if (sceneManager.viewMode === VIEW_MODES.CISLUNAR) return;
         window.dispatchEvent(
           new CustomEvent('lunar:land-to', {
             detail: targetData,
@@ -218,7 +448,7 @@ async function bootstrap() {
         if (window.SurfaceRendererBridge && typeof window.SurfaceRendererBridge.open === 'function') {
           window.SurfaceRendererBridge.open(targetData);
         } else {
-          console.log('[Land to] Forwarding parameters to external module:', targetData);
+          lunarHorizonModal.open(targetData);
         }
       },
     });
@@ -252,6 +482,10 @@ async function bootstrap() {
     });
 
     function applyEphemerisToScene(ephemData, date) {
+      latestTimelineEphemData = ephemData;
+      if (celestialEnv.viewMode === VIEW_MODES.CISLUNAR && celestialEnv.getTrajectoryInfo()) {
+        return;
+      }
       latestEphemData = ephemData;
       lightingSystem.updateSunPosition(ephemData.subSolarLon, ephemData.subSolarLat);
       celestialEnv.updatePositions(ephemData, date);
@@ -271,10 +505,15 @@ async function bootstrap() {
         uniforms.uEarthDirection.value.copy(currentEarthDir);
       }
       raycastController.setEarthDirection(currentEarthDir);
+      sceneManager.setEarthDirection(currentEarthDir);
       uiController.updateSolarInfo(ephemData);
     }
 
     function previewSimulationTime(date) {
+      if (isTrajectoryTimelineActive()) {
+        setTrajectoryTimeFromDate(date);
+        return;
+      }
       currentSimulationDate = date;
       const analytical = HorizonsClient.calculateAnalyticalFallback(date);
       applyEphemerisToScene(
@@ -285,6 +524,10 @@ async function bootstrap() {
 
     let activeCommitSeq = 0;
     async function commitSimulationTime(date) {
+      if (isTrajectoryTimelineActive()) {
+        setTrajectoryTimeFromDate(date);
+        return;
+      }
       currentSimulationDate = date;
       const seq = ++activeCommitSeq;
       uiController.setLoading(true);
@@ -294,11 +537,17 @@ async function bootstrap() {
       uiController.setLoading(false);
     }
 
-    new TimelineController({
+    timelineController = new TimelineController({
       container: document.getElementById('timeline-mount'),
       initialDate: currentSimulationDate,
       onDatePreview: previewSimulationTime,
       onDateCommit: commitSimulationTime,
+      onPlayStateChange: (playing) => {
+        if (isTrajectoryTimelineActive()) {
+          trajectoryPlaybackActive = playing;
+          uiController.setTrajectoryPlayingUI(playing);
+        }
+      },
     });
 
     sceneManager.startRenderLoop((camera, cameraTelemetry) => {
@@ -310,7 +559,7 @@ async function bootstrap() {
       raycastController.update();
       uiController.updateCompass(camera, currentSunDir);
 
-      const altitudeUnits = Math.max(0.00002, camera.position.length() - 1.0);
+      const altitudeUnits = Math.max(0.00002, camera.position.distanceTo(moonGroup.position) - 1.0);
       overlayManager.updateAdaptiveGrid(altitudeUnits);
 
       const actualMaxZoom = lodManager ? lodManager.update(camera) : 2;

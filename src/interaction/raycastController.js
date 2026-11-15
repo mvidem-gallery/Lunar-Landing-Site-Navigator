@@ -137,6 +137,42 @@ export class RaycastController {
     return null;
   }
 
+  getBodyAtClientPos(clientX, clientY) {
+    const rect = this._getViewportRect();
+    if (
+      clientX < rect.left ||
+      clientX > rect.left + rect.width ||
+      clientY < rect.top ||
+      clientY > rect.top + rect.height
+    ) {
+      return null;
+    }
+
+    this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.camera.updateMatrixWorld();
+    this.raycaster.camera = this.camera;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    const moonHits = this.raycaster.intersectObject(this.moonMesh);
+    const visibleTargets = [];
+    for (const target of this.celestialTargets) {
+      if (!this._isObjectVisible(target)) continue;
+      target.updateMatrixWorld(true);
+      visibleTargets.push(target);
+    }
+    const bodyHits = visibleTargets.length
+      ? this.raycaster.intersectObjects(visibleTargets, false)
+      : [];
+
+    const moonDist = moonHits.length > 0 ? moonHits[0].distance : Infinity;
+    const bodyDist = bodyHits.length > 0 ? bodyHits[0].distance : Infinity;
+    if (!Number.isFinite(moonDist) && !Number.isFinite(bodyDist)) {
+      return null;
+    }
+    return bodyDist < moonDist ? bodyHits[0].object.name : 'MOON';
+  }
+
   onPointerMove(event) {
     this._lastClientX = event.clientX;
     this._lastClientY = event.clientY;
@@ -171,15 +207,34 @@ export class RaycastController {
     this.raycaster.camera = this.camera;
     this.raycaster.setFromCamera(this.mouse, this.camera);
     const intersects = this.raycaster.intersectObject(this.moonMesh);
+    const hitBodyType = this._checkCelestialHit();
+    let closestCelestialDist = Infinity;
+    if (hitBodyType && this.celestialTargets.length) {
+      const visibleTargets = this.celestialTargets.filter((t) => this._isObjectVisible(t));
+      const bodyHits = visibleTargets.length
+        ? this.raycaster.intersectObjects(visibleTargets, false)
+        : [];
+      if (bodyHits.length > 0) closestCelestialDist = bodyHits[0].distance;
+    }
 
-    if (intersects.length > 0) {
+    if (intersects.length > 0 && intersects[0].distance <= closestCelestialDist) {
       if (this.onCelestialHover) {
         this.onCelestialHover(null);
       }
 
       const hit = intersects[0];
       const worldPoint = hit.point;
-      const worldNormal = worldPoint.clone().normalize();
+      const moonParent = this.moonMesh.parent;
+      if (moonParent) {
+        moonParent.updateMatrixWorld();
+      }
+      const localPoint = moonParent
+        ? moonParent.worldToLocal(worldPoint.clone())
+        : worldPoint;
+      const localNormal = localPoint.clone().normalize();
+      const worldNormal = moonParent
+        ? localNormal.clone().transformDirection(moonParent.matrixWorld).normalize()
+        : localNormal;
 
       this.marker.visible = true;
       const surfaceOffset = Math.min(0.0005, hit.distance * 0.015);
@@ -194,10 +249,10 @@ export class RaycastController {
       this.marker.scale.set(worldRadius, worldRadius, 1);
 
       const lat = THREE.MathUtils.radToDeg(
-        Math.asin(THREE.MathUtils.clamp(worldPoint.y / MOON_CONFIG.RADIUS, -1, 1))
+        Math.asin(THREE.MathUtils.clamp(localNormal.y, -1, 1))
       );
       const lon = THREE.MathUtils.radToDeg(
-        Math.atan2(-worldPoint.z, worldPoint.x)
+        Math.atan2(-localNormal.z, localNormal.x)
       );
 
       const sunDir = this.lightingSystem.getNormalizedSunDirection();
@@ -216,7 +271,6 @@ export class RaycastController {
     this.marker.visible = false;
     this.onHoverCallback(null);
 
-    const hitBodyType = this._checkCelestialHit();
     if (hitBodyType && this.onCelestialHover) {
       this.onCelestialHover({
         type: hitBodyType,

@@ -169,6 +169,9 @@ export class RulerTool {
     this._camDir = new THREE.Vector3();
     this._projVec = new THREE.Vector3();
     this._lookTarget = new THREE.Vector3();
+    this._localCamPos = new THREE.Vector3();
+    this._invWorldMatrix = new THREE.Matrix4();
+    this._zAxis = new THREE.Vector3(0, 0, 1);
     this._lastHoverNormal = new THREE.Vector3();
     this._hasLastPreview = false;
 
@@ -393,11 +396,13 @@ export class RulerTool {
     this._ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
     this.camera.updateMatrixWorld();
+    this.group.updateWorldMatrix(true, false);
+    this._moonSphere.center.setFromMatrixPosition(this.group.matrixWorld);
     this._raycaster.setFromCamera(this._ndc, this.camera);
     const hit = this._raycaster.ray.intersectSphere(this._moonSphere, this._hitPoint);
     if (!hit) return null;
 
-    return hit.clone().normalize();
+    return this.group.worldToLocal(hit.clone()).normalize();
   }
 
   setActive(active) {
@@ -526,8 +531,7 @@ export class RulerTool {
     holder.add(inner);
 
     holder.position.copy(normal).multiplyScalar(this.surfaceRadius);
-    this._lookTarget.copy(holder.position).add(normal);
-    holder.lookAt(this._lookTarget);
+    holder.quaternion.setFromUnitVectors(this._zAxis, normal);
     holder.renderOrder = 16;
     holder.userData.normal = normal.clone();
     this.group.add(holder);
@@ -773,7 +777,11 @@ export class RulerTool {
       return;
     }
 
-    this._projVec.copy(normal).multiplyScalar(this.surfaceRadius).project(this.camera);
+    this._projVec
+      .copy(normal)
+      .multiplyScalar(this.surfaceRadius)
+      .applyMatrix4(this.group.matrixWorld)
+      .project(this.camera);
     if (
       this._projVec.z > 1.0 ||
       this._projVec.x < -1.05 ||
@@ -806,7 +814,9 @@ export class RulerTool {
     if (this.points.length === 0) return;
 
     camera.updateMatrixWorld();
-    const camPos = camera.position;
+    this.group.updateWorldMatrix(true, false);
+    this._invWorldMatrix.copy(this.group.matrixWorld).invert();
+    const camPos = this._localCamPos.copy(camera.position).applyMatrix4(this._invWorldMatrix);
     const camDist = camPos.length();
     this._camDir.copy(camPos).divideScalar(camDist);
 

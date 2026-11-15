@@ -1,11 +1,13 @@
 import { defineConfig } from 'vite';
 import { PROXY_CONFIG } from './src/config/constants.js';
+import { lunarHorizonPlugin } from './src/lunar-horizon/vitePlugin.mjs';
 
 export default defineConfig({
+  plugins: [lunarHorizonPlugin()],
   server: {
     watch: {
-      // Виключаємо десятки тисяч локальних тайлів із file-watcher Vite
-      ignored: ['**/public/tiles/**', '**/tiles/**'],
+      // Виключаємо десятки тисяч локальних тайлів і сирі архіви DEM із file-watcher Vite
+      ignored: ['**/public/tiles/**', '**/tiles/**', '**/lunar-horizon-latest/**'],
     },
     proxy: {
       [PROXY_CONFIG.OPM_TILES_PATH]: {

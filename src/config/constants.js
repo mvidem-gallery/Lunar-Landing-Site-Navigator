@@ -38,6 +38,33 @@ export const VIEW_MODES = {
   CISLUNAR: 'CISLUNAR',
 };
 
+export const TRAJECTORY_CONFIG = {
+  FORMAT: 'lwp-trajectory/1',
+  DEFAULT_URL: '/trajectories/trajectory-2026-11-15T121332Z.json',
+  DEFAULT_PLAYBACK_DURATION_SEC: 28,
+  NEAR_EARTH_SOLID_RADIUS_MULT: 3.5,
+  NEAR_MOON_SOLID_RADIUS_MULT: 7.0,
+  COMPRESSED_DASH_SIZE: 0.42,
+  COMPRESSED_GAP_SIZE: 0.32,
+  MOON_ORBIT_ARC: {
+    color: 0x94a3b8,
+    lineWidth: 1.6,
+    opacity: 0.45,
+    dashSize: 0.28,
+    gapSize: 0.22,
+  },
+  PHASES: {
+    ascent: { label: 'Ascent', color: 0xfb923c, css: '#fb923c', lineWidth: 2.8, opacity: 0.96 },
+    parking_orbit: { label: 'Parking Orbit', color: 0x38bdf8, css: '#38bdf8', lineWidth: 2.4, opacity: 0.88 },
+    transfer: { label: 'Direct Transfer', color: 0x34d399, css: '#34d399', lineWidth: 3.1, opacity: 0.96 },
+    lunar_orbit: { label: 'Lunar Orbit', color: 0xc084fc, css: '#c084fc', lineWidth: 2.5, opacity: 0.9 },
+    descent_coast: { label: 'Descent Coast', color: 0xf472b6, css: '#f472b6', lineWidth: 2.7, opacity: 0.94 },
+    braking: { label: 'Powered Braking', color: 0xf87171, css: '#f87171', lineWidth: 3.0, opacity: 0.98 },
+    terminal: { label: 'Terminal Descent', color: 0xfacc15, css: '#facc15', lineWidth: 3.0, opacity: 1.0 },
+  },
+  MAJOR_EVENTS: new Set(['launch', 'tli', 'loi', 'doi', 'touchdown']),
+};
+
 export const LOD_CONFIG = {
   MIN_ZOOM: 2,
   MAX_ZOOM: 12,

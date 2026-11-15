@@ -585,6 +585,199 @@ body {
   white-space: nowrap;
 }
 
+/* ==================== ПАНЕЛЬ ТРАЄКТОРІЇ (CISLUNAR_VIEW) ==================== */
+.cislunar-trajectory-card {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: rgba(14, 19, 27, 0.9);
+  border: 1px solid rgba(52, 211, 153, 0.32);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  font-size: 11px;
+  user-select: none;
+}
+
+body.cislunar-mode .cislunar-trajectory-card {
+  display: flex;
+}
+
+.traj-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.traj-card-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #6ee7b7;
+}
+
+.traj-card-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.traj-mini-btn {
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(26, 34, 46, 0.92);
+  color: #94a3b8;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.traj-mini-btn:hover {
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #f1f5f9;
+}
+
+.traj-mini-btn.active {
+  background: rgba(52, 211, 153, 0.2);
+  border-color: rgba(52, 211, 153, 0.65);
+  color: #a7f3d0;
+}
+
+.traj-summary {
+  color: #cbd5e1;
+  font-size: 10.8px;
+  line-height: 1.38;
+}
+
+.traj-focus-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.traj-focus-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  color: #7f8c9b;
+  flex-shrink: 0;
+}
+
+.traj-focus-switch {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  padding: 2px;
+  border-radius: 5px;
+  background: rgba(10, 15, 22, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.traj-focus-btn {
+  padding: 3px 4px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 10.2px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.traj-focus-btn:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.traj-focus-btn.active {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: rgba(79, 195, 247, 0.6);
+  color: #e0f2fe;
+}
+
+.traj-playback-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.traj-play-btn {
+  width: 24px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(79, 195, 247, 0.4);
+  background: rgba(30, 41, 59, 0.95);
+  color: #e0f2fe;
+  font-size: 9px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.traj-play-btn:hover {
+  border-color: #38bdf8;
+}
+
+.traj-scrub-slider {
+  flex: 1;
+  accent-color: #34d399;
+  cursor: pointer;
+}
+
+.traj-time-readout {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  color: #fef08a;
+  min-width: 72px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.traj-telemetry-row {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  color: #93c5fd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.traj-phase-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.traj-phase-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.8px;
+  color: #cbd5e1;
+}
+
+.traj-phase-dot {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.traj-phase-dot--dashed {
+  width: 14px;
+  height: 0;
+  border-radius: 0;
+}
+
 /* ==================== ПРАВА ПАНЕЛЬ ІНСТРУМЕНТІВ ТА ІНФО-ДРОВЕР ==================== */
 .right-toolbar {
   position: fixed;

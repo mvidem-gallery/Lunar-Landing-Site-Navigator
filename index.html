@@ -218,6 +218,41 @@
         <button type="button" id="global-search-clear" class="global-search-clear" title="Clear">✕</button>
         <div id="global-search-results" class="global-search-results"></div>
       </div>
+
+      <section id="cislunar-trajectory-card" class="cislunar-trajectory-card" aria-label="Direct Trajectory">
+        <div class="traj-card-header">
+          <span class="traj-card-title">DIRECT TRAJECTORY</span>
+          <div class="traj-card-actions">
+            <button type="button" id="traj-visibility-btn" class="traj-mini-btn active" title="Toggle Trajectory Path">
+              Path
+            </button>
+            <button type="button" id="traj-load-btn" class="traj-mini-btn" title="Load external lwp-trajectory/1 JSON">
+              Load JSON
+            </button>
+            <input type="file" id="traj-file-input" accept=".json,application/json" hidden />
+          </div>
+        </div>
+
+        <div id="traj-summary" class="traj-summary">Loading trajectory...</div>
+
+        <div class="traj-focus-row" role="group" aria-label="Camera Focus Target">
+          <span class="traj-focus-label">FOCUS</span>
+          <div class="traj-focus-switch">
+            <button type="button" class="traj-focus-btn active" data-focus-target="SYSTEM" title="Frame Earth–Moon System">⚖ System</button>
+            <button type="button" class="traj-focus-btn" data-focus-target="EARTH" title="Focus on Earth (or double-click Earth)">🌍 Earth</button>
+            <button type="button" class="traj-focus-btn" data-focus-target="MOON" title="Focus on Moon (or double-click Moon)">🌑 Moon</button>
+          </div>
+        </div>
+
+        <div class="traj-playback-row">
+          <button type="button" id="traj-play-btn" class="traj-play-btn" title="Play / Pause Spacecraft">❚❚</button>
+          <input type="range" id="traj-scrub-slider" class="traj-scrub-slider" min="0" max="1000" value="0" aria-label="Mission elapsed time" />
+          <span id="traj-time-readout" class="traj-time-readout">T+ 0m</span>
+        </div>
+
+        <div id="traj-telemetry-row" class="traj-telemetry-row">—</div>
+        <div id="traj-phase-legend" class="traj-phase-legend"></div>
+      </section>
     </header>
 
     <!-- Top-right compass & quick action toolbar -->

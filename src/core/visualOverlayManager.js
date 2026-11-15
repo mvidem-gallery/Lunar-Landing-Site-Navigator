@@ -52,6 +52,8 @@ export class VisualOverlayManager {
     this._cellNormal = new THREE.Vector3();
     this._frustum = new THREE.Frustum();
     this._projScreenMatrix = new THREE.Matrix4();
+    this._invWorldMatrix = new THREE.Matrix4();
+    this._localCamPos = new THREE.Vector3();
     this._boundingSphere = new THREE.Sphere(new THREE.Vector3(), 0.05);
   }
 
@@ -341,11 +343,16 @@ export class VisualOverlayManager {
     }
 
     camera.updateMatrixWorld();
-    this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.gridLabelsGroup.updateWorldMatrix(true, false);
+    this._projScreenMatrix
+      .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+      .multiply(this.gridLabelsGroup.matrixWorld);
     this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
-    const camDist = camera.position.length();
-    this._camDir.copy(camera.position).divideScalar(camDist);
+    this._invWorldMatrix.copy(this.gridLabelsGroup.matrixWorld).invert();
+    this._localCamPos.copy(camera.position).applyMatrix4(this._invWorldMatrix);
+    const camDist = this._localCamPos.length();
+    this._camDir.copy(this._localCamPos).divideScalar(Math.max(1e-6, camDist));
 
     const stepDeg = this.uniforms.uGridStepDeg.value;
     const horizonCos = MOON_CONFIG.RADIUS / camDist;

@@ -1,5 +1,12 @@
 import * as THREE from 'three';
-import { LOD_CONFIG, MAP_LAYERS, MOON_CONFIG, VIEW_MODES } from '../config/constants.js';
+import {
+  LOD_CONFIG,
+  MAP_LAYERS,
+  MOON_CONFIG,
+  TRAJECTORY_CONFIG,
+  VIEW_MODES,
+} from '../config/constants.js';
+import { formatMissionDuration } from '../astronomy/trajectoryGenerator.js';
 
 const TAB_TITLES = {
   missions: { title: 'Mission', badge: 'MISSION' },
@@ -34,7 +41,19 @@ export class UIController {
     this.topFloatingBar = document.getElementById('top-floating-bar');
     this.topMissionPill = document.getElementById('top-mission-pill');
     this.viewModeBtns = Array.from(document.querySelectorAll('[data-view-mode]'));
+    this.focusTargetBtns = Array.from(document.querySelectorAll('[data-focus-target]'));
     this.bottomDock = document.getElementById('bottom-dock');
+
+    // Панель прямої траєкторії (Cislunar View)
+    this.trajSummaryEl = document.getElementById('traj-summary');
+    this.trajTelemetryEl = document.getElementById('traj-telemetry-row');
+    this.trajPhaseLegendEl = document.getElementById('traj-phase-legend');
+    this.trajVisibilityBtn = document.getElementById('traj-visibility-btn');
+    this.trajLoadBtn = document.getElementById('traj-load-btn');
+    this.trajFileInput = document.getElementById('traj-file-input');
+    this.trajPlayBtn = document.getElementById('traj-play-btn');
+    this.trajScrubSlider = document.getElementById('traj-scrub-slider');
+    this.trajTimeReadoutEl = document.getElementById('traj-time-readout');
 
     // Пошук
     this.searchInput = document.getElementById('global-search-input');
@@ -98,7 +117,16 @@ export class UIController {
     this.homeCallback = null;
     this.flyToCallback = null;
     this.viewModeChangeCallback = null;
+    this.cislunarFocusChangeCallback = null;
     this.searchProvider = null;
+
+    this.trajectoryToggleCallback = null;
+    this.trajectoryFileLoadCallback = null;
+    this.trajectoryPlayPauseCallback = null;
+    this.trajectoryScrubCallback = null;
+    this._isTrajectoryPlaying = true;
+    this._isTrajectoryVisible = true;
+    this._isScrubbingTrajectory = false;
 
     this._isRightDrawerOpen = false;
     this._isLeftCollapsed = false;
@@ -120,6 +148,57 @@ export class UIController {
         this.viewModeChangeCallback?.(mode);
       });
     });
+
+    this.focusTargetBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const focus = btn.dataset.focusTarget || 'SYSTEM';
+        this.setCislunarFocusUI(focus);
+        this.cislunarFocusChangeCallback?.(focus);
+      });
+    });
+
+    this.trajVisibilityBtn?.addEventListener('click', () => {
+      this._isTrajectoryVisible = !this._isTrajectoryVisible;
+      this.trajVisibilityBtn.classList.toggle('active', this._isTrajectoryVisible);
+      this.trajectoryToggleCallback?.(this._isTrajectoryVisible);
+    });
+
+    this.trajLoadBtn?.addEventListener('click', () => {
+      this.trajFileInput?.click();
+    });
+
+    this.trajFileInput?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const jsonDoc = JSON.parse(text);
+        await this.trajectoryFileLoadCallback?.(jsonDoc, file.name);
+      } catch (err) {
+        this.setTrajectoryError(err?.message || 'Invalid trajectory JSON file');
+      } finally {
+        e.target.value = '';
+      }
+    });
+
+    this.trajPlayBtn?.addEventListener('click', () => {
+      this._isTrajectoryPlaying = !this._isTrajectoryPlaying;
+      this._syncPlayButtonUI();
+      this.trajectoryPlayPauseCallback?.(this._isTrajectoryPlaying);
+    });
+
+    if (this.trajScrubSlider) {
+      this.trajScrubSlider.addEventListener('pointerdown', () => {
+        this._isScrubbingTrajectory = true;
+      });
+      window.addEventListener('pointerup', () => {
+        this._isScrubbingTrajectory = false;
+      });
+      this.trajScrubSlider.addEventListener('input', () => {
+        const progress = Number(this.trajScrubSlider.value) / 1000;
+        this.trajectoryScrubCallback?.(progress);
+      });
+    }
 
     this.railTabBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -350,6 +429,16 @@ export class UIController {
     });
   }
 
+  _syncPlayButtonUI() {
+    if (!this.trajPlayBtn) return;
+    this.trajPlayBtn.textContent = this._isTrajectoryPlaying ? '❚❚' : '▶';
+  }
+
+  setTrajectoryPlayingUI(isPlaying) {
+    this._isTrajectoryPlaying = Boolean(isPlaying);
+    this._syncPlayButtonUI();
+  }
+
   setLeftTab(tabName) {
     if (!this.tabPanes[tabName]) return;
     this._activeLeftTab = tabName;
@@ -395,9 +484,103 @@ export class UIController {
       mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
         ? VIEW_MODES.CISLUNAR
         : VIEW_MODES.LUNAR;
+    document.body.classList.toggle('cislunar-mode', activeMode === VIEW_MODES.CISLUNAR);
     this.viewModeBtns.forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.viewMode === activeMode);
     });
+  }
+
+  setCislunarFocusUI(focus) {
+    this.focusTargetBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.focusTarget === focus);
+    });
+  }
+
+  updateTrajectoryInfo(info) {
+    if (!info) return;
+    const { meta, landingSite, spaceport, segments, isPlaying, userVisible } = info;
+    this._isTrajectoryPlaying = Boolean(isPlaying);
+    this._isTrajectoryVisible = Boolean(userVisible);
+    this._syncPlayButtonUI();
+    this.trajVisibilityBtn?.classList.toggle('active', this._isTrajectoryVisible);
+
+    if (this.trajSummaryEl) {
+      const esc = UIController.escapeHtml;
+      const latDir = landingSite.latDeg >= 0 ? 'N' : 'S';
+      const lonDir = landingSite.lonDeg >= 0 ? 'E' : 'W';
+      const targetStr = `${Math.abs(landingSite.latDeg).toFixed(2)}°${latDir}, ${Math.abs(landingSite.lonDeg).toFixed(2)}°${lonDir}`;
+      this.trajSummaryEl.innerHTML = `
+        <div><strong>${esc(meta.rocket)}</strong> · ${esc(spaceport.name)} → <strong>${targetStr}</strong></div>
+        <div>Duration: <strong>${formatMissionDuration(meta.durationSec)}</strong> · Δv: <strong>${meta.totalDeltaVKmS.toFixed(2)} km/s</strong></div>
+      `;
+    }
+
+    if (this.trajPhaseLegendEl) {
+      const phaseCompressed = new Map();
+      for (const seg of segments || []) {
+        const prev = phaseCompressed.get(seg.phase) || false;
+        phaseCompressed.set(seg.phase, prev || Boolean(seg.isCompressed));
+      }
+      const items = [];
+      for (const [phase, isCompressed] of phaseCompressed.entries()) {
+        const cfg = TRAJECTORY_CONFIG.PHASES[phase];
+        if (!cfg) continue;
+        const swatchStyle = isCompressed
+          ? `border-top: 2px dashed ${cfg.css}; background: transparent;`
+          : `background: ${cfg.css};`;
+        const dashedCls = isCompressed ? ' traj-phase-dot--dashed' : '';
+        items.push(
+          `<span class="traj-phase-item"><span class="traj-phase-dot${dashedCls}" style="${swatchStyle}"></span>${UIController.escapeHtml(cfg.label)}</span>`
+        );
+      }
+      this.trajPhaseLegendEl.innerHTML = items.join('');
+    }
+  }
+
+  updateTrajectoryTelemetry(sample) {
+    if (!sample) return;
+    if (this.trajScrubSlider && !this._isScrubbingTrajectory) {
+      this.trajScrubSlider.value = String(Math.round(sample.progress * 1000));
+    }
+    if (this.trajTimeReadoutEl) {
+      this.trajTimeReadoutEl.textContent = `T+ ${formatMissionDuration(sample.t_s)}`;
+    }
+    if (this.trajTelemetryEl) {
+      const phaseMeta = TRAJECTORY_CONFIG.PHASES[sample.phase];
+      const phaseName = phaseMeta ? phaseMeta.label : sample.phase;
+      const speedText =
+        sample.speedKmS < 0.1
+          ? `${(sample.speedKmS * 1000).toFixed(1)} m/s`
+          : `${sample.speedKmS.toFixed(2)} km/s`;
+      const speedRef = sample.isLunarRelSpeed ? ' (Moon)' : '';
+      const altText =
+        sample.moonAltKm < 35000
+          ? `Alt Moon: ${Math.max(0, Math.round(sample.moonAltKm)).toLocaleString()} km`
+          : `Alt Earth: ${Math.max(0, Math.round(sample.earthAltKm)).toLocaleString()} km`;
+      this.trajTelemetryEl.textContent = `${phaseName} · ${speedText}${speedRef} · ${altText}`;
+    }
+  }
+
+  setTrajectoryError(message) {
+    if (this.trajSummaryEl) {
+      this.trajSummaryEl.innerHTML = `<span style="color:#f87171">${UIController.escapeHtml(message)}</span>`;
+    }
+  }
+
+  onTrajectoryToggle(callback) {
+    this.trajectoryToggleCallback = callback;
+  }
+
+  onTrajectoryFileLoad(callback) {
+    this.trajectoryFileLoadCallback = callback;
+  }
+
+  onTrajectoryPlayPause(callback) {
+    this.trajectoryPlayPauseCallback = callback;
+  }
+
+  onTrajectoryScrub(callback) {
+    this.trajectoryScrubCallback = callback;
   }
 
   _syncLayerInfo(layerId) {
@@ -438,6 +621,10 @@ export class UIController {
 
   onViewModeChange(callback) {
     this.viewModeChangeCallback = callback;
+  }
+
+  onCislunarFocusChange(callback) {
+    this.cislunarFocusChangeCallback = callback;
   }
 
   setSearchProvider(providerFn) {

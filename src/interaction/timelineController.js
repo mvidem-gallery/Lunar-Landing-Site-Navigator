@@ -3,12 +3,23 @@ import './timelineController.css';
 const SPEED_PRESETS = [
   { label: '1×', multiplier: 1 },
   { label: '60×', multiplier: 60 },
+  { label: '15m/s', multiplier: 900 },
   { label: '1h/s', multiplier: 3600 },
+  { label: '3h/s', multiplier: 10800 },
   { label: '6h/s', multiplier: 21600 },
   { label: '1d/s', multiplier: 86400 },
 ];
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const SHORT_EVENT_LABELS = {
+  launch: 'T0',
+  tli: 'TLI',
+  loi: 'LOI',
+  doi: 'DOI',
+  pdi: 'PDI',
+  touchdown: 'TD',
+};
 
 export class TimelineController {
   /**
@@ -17,28 +28,31 @@ export class TimelineController {
    * @param {Date} [options.initialDate]
    * @param {Function} options.onDatePreview - швидке оновлення при скрабі/програванні
    * @param {Function} options.onDateCommit - точний запит (напр. JPL Horizons) при завершенні скрабу/виборі
+   * @param {Function} [options.onPlayStateChange] - сповіщення про зміну стану відтворення
    */
   constructor({
     container,
     initialDate = new Date(),
     onDatePreview,
     onDateCommit,
+    onPlayStateChange,
   }) {
     this.container = container;
     this.currentDate = new Date(initialDate.getTime());
     this.onDatePreview = onDatePreview;
     this.onDateCommit = onDateCommit;
+    this.onPlayStateChange = onPlayStateChange;
 
     // Видимий діапазон шкали (мс), за замовчуванням ~28 діб
     this.spanMs = 28 * 86400 * 1000;
-    this.minSpanMs = 6 * 3600 * 1000; // 6 годин
+    this.minSpanMs = 30 * 60 * 1000; // 30 хвилин
     this.maxSpanMs = 180 * 86400 * 1000; // 180 діб
 
     // Положення бігунка на екрані (частка ширини: 0.14 щоб центр дати був як на макеті зліва)
     this.playheadRatio = 0.12;
 
     this.isPlaying = false;
-    this.speedIndex = 2; // 1год/с за замовчуванням для наочного руху тіні
+    this.speedIndex = 3; // 1h/s за замовчуванням для наочного руху тіні
     this._lastRafTime = 0;
     this._rafId = null;
 
@@ -47,6 +61,7 @@ export class TimelineController {
     this._dragStartMs = 0;
     this._commitDebounceTimer = null;
     this._lastPlayCommitTime = 0;
+    this.trajectoryWindow = null;
 
     this._buildDOM();
     this._bindEvents();
@@ -116,6 +131,10 @@ export class TimelineController {
 
     this.nowBtn.addEventListener('click', () => {
       this.pause();
+      if (this.trajectoryWindow) {
+        this.setDate(new Date(this.trajectoryWindow.startMs), true);
+        return;
+      }
       this.setDate(new Date(), true);
     });
 
@@ -207,7 +226,65 @@ export class TimelineController {
     });
   }
 
+  _clampMsToTrajectory(ms) {
+    if (!this.trajectoryWindow) return ms;
+    return Math.max(this.trajectoryWindow.startMs, Math.min(this.trajectoryWindow.endMs, ms));
+  }
+
+  setTrajectoryWindow(windowConfig) {
+    clearTimeout(this._commitDebounceTimer);
+    if (!windowConfig) {
+      this.trajectoryWindow = null;
+      this.nowBtn.textContent = 'Now';
+      this.nowBtn.title = 'Current UTC time';
+      this.nowBtn.classList.remove('traj-t0');
+      this.render();
+      return;
+    }
+    const startMs = Number(windowConfig.startMs);
+    const endMs = Math.max(startMs, Number(windowConfig.endMs));
+    this.trajectoryWindow = {
+      startMs,
+      endMs,
+      durationMs: Math.max(0, endMs - startMs),
+      phases: Array.isArray(windowConfig.phases) ? windowConfig.phases : [],
+      events: Array.isArray(windowConfig.events) ? windowConfig.events : [],
+    };
+    this.nowBtn.textContent = 'T0';
+    this.nowBtn.title = 'Jump to Launch (T0)';
+    this.nowBtn.classList.add('traj-t0');
+    this.currentDate = new Date(this._clampMsToTrajectory(this.currentDate.getTime()));
+    this.render();
+  }
+
+  setSpanMs(spanMs) {
+    if (!Number.isFinite(spanMs)) return;
+    this.spanMs = Math.max(this.minSpanMs, Math.min(this.maxSpanMs, spanMs));
+    this.render();
+  }
+
+  setSpeedByLabel(label) {
+    const idx = SPEED_PRESETS.findIndex((p) => p.label === label);
+    if (idx !== -1) {
+      this.speedIndex = idx;
+      this.speedBtn.textContent = SPEED_PRESETS[this.speedIndex].label;
+    }
+  }
+
+  setSpeedIndex(index) {
+    if (Number.isInteger(index) && index >= 0 && index < SPEED_PRESETS.length) {
+      this.speedIndex = index;
+      this.speedBtn.textContent = SPEED_PRESETS[this.speedIndex].label;
+    }
+  }
+
+  getSpeedLabel() {
+    return SPEED_PRESETS[this.speedIndex]?.label || '1h/s';
+  }
+
   _getStepMs() {
+    if (this.spanMs <= 2 * 3600 * 1000) return 300 * 1000; // 5 хв
+    if (this.spanMs <= 8 * 3600 * 1000) return 900 * 1000; // 15 хв
     if (this.spanMs <= 24 * 3600 * 1000) return 3600 * 1000; // 1 год
     if (this.spanMs <= 10 * 86400 * 1000) return 6 * 3600 * 1000; // 6 год
     return 86400 * 1000; // 1 доба
@@ -224,7 +301,8 @@ export class TimelineController {
 
   setDate(date, commitImmediately = false) {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return;
-    this.currentDate = new Date(date.getTime());
+    const clampedMs = this._clampMsToTrajectory(date.getTime());
+    this.currentDate = new Date(clampedMs);
     this.render();
 
     if (commitImmediately) {
@@ -250,6 +328,7 @@ export class TimelineController {
     this.isPlaying = true;
     this.playPauseBtn.textContent = '⏸';
     this.playPauseBtn.classList.add('playing');
+    this.onPlayStateChange?.(true);
     this._lastRafTime = performance.now();
     this._lastPlayCommitTime = performance.now();
 
@@ -259,14 +338,21 @@ export class TimelineController {
       this._lastRafTime = now;
 
       const mult = SPEED_PRESETS[this.speedIndex].multiplier;
-      this.currentDate = new Date(this.currentDate.getTime() + dtSec * mult * 1000);
+      let nextMs = this.currentDate.getTime() + dtSec * mult * 1000;
+      if (this.trajectoryWindow && this.trajectoryWindow.durationMs > 0) {
+        const { startMs, endMs, durationMs } = this.trajectoryWindow;
+        if (nextMs > endMs) {
+          nextMs = startMs + ((nextMs - startMs) % durationMs);
+        }
+      }
+      this.currentDate = new Date(nextMs);
       this.render();
 
       if (typeof this.onDatePreview === 'function') {
         this.onDatePreview(new Date(this.currentDate.getTime()));
       }
 
-      if (now - this._lastPlayCommitTime > 2500) {
+      if (!this.trajectoryWindow && now - this._lastPlayCommitTime > 2500) {
         this._lastPlayCommitTime = now;
         if (typeof this.onDateCommit === 'function') {
           this.onDateCommit(new Date(this.currentDate.getTime()));
@@ -284,6 +370,7 @@ export class TimelineController {
     this.isPlaying = false;
     this.playPauseBtn.textContent = '▶';
     this.playPauseBtn.classList.remove('playing');
+    this.onPlayStateChange?.(false);
     if (this._rafId) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
@@ -303,6 +390,8 @@ export class TimelineController {
   }
 
   _formatSpanHint(spanMs) {
+    const mins = spanMs / 60000;
+    if (mins < 90) return `${Math.round(mins)}m`;
     const hours = spanMs / 3600000;
     if (hours < 48) return `${Math.round(hours)}h`;
     return `${Math.round(hours / 24)}d`;
@@ -324,6 +413,8 @@ export class TimelineController {
 
   _pickTickIntervals(widthPx) {
     const candidates = [
+      { major: 300 * 1000, minor: 60 * 1000 }, // 5m / 1m
+      { major: 900 * 1000, minor: 300 * 1000 }, // 15m / 5m
       { major: 3600 * 1000, minor: 900 * 1000 }, // 1h / 15m
       { major: 3 * 3600 * 1000, minor: 3600 * 1000 }, // 3h / 1h
       { major: 6 * 3600 * 1000, minor: 3600 * 1000 }, // 6h / 1h
@@ -409,6 +500,74 @@ export class TimelineController {
 
       ctx.fillStyle = '#d8e6f3';
       ctx.fillText(this._formatTickLabel(t, major), x + 5, 5);
+    }
+
+    // У режимі траєкторії малюємо смугу фаз місії та маркерів подій на шкалі часу
+    if (this.trajectoryWindow && this.trajectoryWindow.durationMs > 0) {
+      const { startMs: trajStartMs, endMs: trajEndMs, phases, events } = this.trajectoryWindow;
+      const bandLeft = ((trajStartMs - startMs) / this.spanMs) * width;
+      const bandRight = ((trajEndMs - startMs) / this.spanMs) * width;
+
+      // Приглушення за межами часового вікна місії
+      ctx.fillStyle = 'rgba(8, 12, 18, 0.42)';
+      if (bandLeft > 0) {
+        ctx.fillRect(0, 0, Math.min(width, bandLeft), height);
+      }
+      if (bandRight < width) {
+        const rx = Math.max(0, bandRight);
+        ctx.fillRect(rx, 0, width - rx, height);
+      }
+
+      // Кольорова стрічка фаз польоту над лінією шкали
+      const barY = height - 20;
+      for (const seg of phases) {
+        const x0 = ((seg.startMs - startMs) / this.spanMs) * width;
+        const x1 = ((seg.endMs - startMs) / this.spanMs) * width;
+        if (x1 < 0 || x0 > width) continue;
+        const cx0 = Math.max(0, x0);
+        const cx1 = Math.min(width, x1);
+        ctx.save();
+        ctx.strokeStyle = seg.colorCss || '#34d399';
+        ctx.lineWidth = 3.2;
+        if (seg.isCompressed) {
+          ctx.setLineDash([5, 4]);
+        }
+        ctx.beginPath();
+        ctx.moveTo(cx0, barY);
+        ctx.lineTo(Math.max(cx0 + 1, cx1), barY);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Віхи місії (T0, TLI, LOI, DOI, PDI, TD)
+      let lastBadgeRight = -Infinity;
+      ctx.font = '700 9.5px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const ev of events) {
+        const ex = ((ev.ms - startMs) / this.spanMs) * width;
+        if (ex < -20 || ex > width + 20) continue;
+
+        ctx.fillStyle = ev.colorCss || '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(ex, barY, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        const shortLabel = SHORT_EVENT_LABELS[ev.name] || ev.name?.toUpperCase() || '';
+        if (!shortLabel) continue;
+        const labelWidth = ctx.measureText(shortLabel).width + 8;
+        if (ex - labelWidth * 0.5 > lastBadgeRight + 4) {
+          const badgeY = height - 32;
+          ctx.fillStyle = 'rgba(13, 19, 28, 0.88)';
+          ctx.fillRect(ex - labelWidth * 0.5, badgeY - 7, labelWidth, 14);
+          ctx.strokeStyle = ev.colorCss || '#38bdf8';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(ex - labelWidth * 0.5, badgeY - 7, labelWidth, 14);
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillText(shortLabel, ex, badgeY + 0.5);
+          lastBadgeRight = ex + labelWidth * 0.5;
+        }
+      }
     }
 
     // Вертикальний бігунок поточного часу (червоно-кораловий індикатор як на макеті)

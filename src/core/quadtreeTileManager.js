@@ -211,6 +211,8 @@ export class QuadtreeTileManager {
     this._projScreenMatrix = new THREE.Matrix4();
     this._boundingSphere = new THREE.Sphere();
     this._camDir = new THREE.Vector3();
+    this._invWorldMatrix = new THREE.Matrix4();
+    this._localCamPos = new THREE.Vector3();
 
     this.initRoots();
   }
@@ -455,6 +457,7 @@ export class QuadtreeTileManager {
           '#include <common>',
           `#include <common>
            varying vec3 vWorldSphereNormal;
+           varying vec3 vWorldSphereCenter;
            varying vec3 vLocalSpherePos;
            varying vec2 vGridTileUv;`
         )
@@ -463,7 +466,8 @@ export class QuadtreeTileManager {
           `#include <worldpos_vertex>
            vLocalSpherePos = position;
            vGridTileUv = uv;
-           vWorldSphereNormal = normalize((modelMatrix * vec4(position, 1.0)).xyz);`
+           vWorldSphereCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+           vWorldSphereNormal = normalize(mat3(modelMatrix) * normalize(position));`
         );
 
       shader.fragmentShader = shader.fragmentShader
@@ -471,6 +475,7 @@ export class QuadtreeTileManager {
           '#include <common>',
           `#include <common>
            varying vec3 vWorldSphereNormal;
+           varying vec3 vWorldSphereCenter;
            varying vec3 vLocalSpherePos;
            varying vec2 vGridTileUv;
            uniform vec3 uEarthDirection;
@@ -546,7 +551,7 @@ export class QuadtreeTileManager {
         .replace(
           '#include <color_fragment>',
           `#include <color_fragment>
-           float camAlt = max(0.001, length(cameraPosition) - 1.0);
+           float camAlt = max(0.001, length(cameraPosition - vWorldSphereCenter) - 1.0);
            float detailWeight = 1.0 - smoothstep(0.002, 0.04, camAlt);
            if (detailWeight > 0.01) {
              float micro = lunarMicroDetail(normalize(vLocalSpherePos));
@@ -572,7 +577,7 @@ export class QuadtreeTileManager {
            }
 
            if (uShowCoordGrid) {
-             float camAltGrid = max(0.00002, length(cameraPosition) - 1.0);
+             float camAltGrid = max(0.00002, length(cameraPosition - vWorldSphereCenter) - 1.0);
              float minDegDeriv = degrees(camAltGrid * 0.00085);
 
              float equatorMask = 0.0;
@@ -653,13 +658,17 @@ export class QuadtreeTileManager {
 
   update(camera) {
     camera.updateMatrixWorld();
-    this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.group.updateWorldMatrix(true, false);
+    this._projScreenMatrix
+      .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+      .multiply(this.group.matrixWorld);
     this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
-    const camPos = camera.position;
+    this._invWorldMatrix.copy(this.group.matrixWorld).invert();
+    const camPos = this._localCamPos.copy(camera.position).applyMatrix4(this._invWorldMatrix);
     const camDist = camPos.length();
     this._lastCamDist = camDist;
-    this._camDir.copy(camPos).divideScalar(camDist);
+    this._camDir.copy(camPos).divideScalar(Math.max(1e-6, camDist));
 
     const highLodBlocked = this.isHighLodBlocked(camDist);
     const horizonCos = MOON_CONFIG.RADIUS / camDist;

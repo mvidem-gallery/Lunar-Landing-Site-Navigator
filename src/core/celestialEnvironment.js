@@ -7,6 +7,8 @@ import {
   VIEW_MODES,
 } from '../config/constants.js';
 import { EarthBuilder } from './earthBuilder.js';
+import { TrajectoryGenerator } from '../astronomy/trajectoryGenerator.js';
+import { TrajectoryRenderer } from './trajectoryRenderer.js';
 
 const STARFIELD_VERTEX_SHADER = /* glsl */ `
   #include <common>
@@ -133,17 +135,22 @@ export class CelestialEnvironment {
 
     this.viewMode = VIEW_MODES.LUNAR;
     this.earthDistance = CELESTIAL_CONFIG.EARTH_DISTANCE;
+    this._currentEarthDistance = this.earthDistance;
     this.cislunarEarthDistance = EARTH_CONFIG.CISLUNAR_DISTANCE;
     this.earthRadius = EARTH_CONFIG.RADIUS;
     this.sunDistance = CELESTIAL_CONFIG.SUN_DISTANCE;
     this.sunRadius = CELESTIAL_CONFIG.SUN_RADIUS;
 
+    this._lunarSkyEuler = new THREE.Euler(
+      THREE.MathUtils.degToRad(-STARMAP_CONFIG.ECLIPTIC_OBLIQUITY_DEG),
+      0,
+      0
+    );
     this.celestialSphereGroup = new THREE.Group();
     this.celestialSphereGroup.name = 'CelestialSphere';
-    this.celestialSphereGroup.rotation.x = THREE.MathUtils.degToRad(
-      -STARMAP_CONFIG.ECLIPTIC_OBLIQUITY_DEG
-    );
+    this.celestialSphereGroup.quaternion.setFromEuler(this._lunarSkyEuler);
 
+    this.moonGroup = null;
     this.earthGroup = null;
     this.sunGroup = new THREE.Group();
 
@@ -156,7 +163,24 @@ export class CelestialEnvironment {
     this.milkywayMesh = null;
 
     this._sunDir = new THREE.Vector3(1, 0, 0);
-    this._earthDir = new THREE.Vector3(-1, 0, 0);
+    this._earthDir = new THREE.Vector3(1, 0, 0);
+
+    // Модуль рендерингу траєкторії відокремлено від математики генератора траєкторій
+    this.trajectoryRenderer = new TrajectoryRenderer(this.scene);
+    this._parsedTrajectory = null;
+    this._generatedTrajectory = null;
+    this._trajectoryUserVisible = true;
+    this._trajectoryDirty = false;
+    this._onTrajectoryLoadedCallback = null;
+    this._externalTelemetryTickCallback = null;
+    this._onPhysicalStateChangeCallback = null;
+
+    this.trajectoryRenderer.onTelemetryTick((sample, meta) => {
+      if (this._isCislunarPhysicsActive()) {
+        this._applyCislunarPhysicalStateAtTime(sample.t_s);
+      }
+      this._externalTelemetryTickCallback?.(sample, meta);
+    });
   }
 
   async init() {
@@ -168,6 +192,66 @@ export class CelestialEnvironment {
     this.scene.add(this.earthGroup);
     this.scene.add(this.sunGroup);
     this._syncEarthState();
+  }
+
+  setMoonGroup(moonGroup) {
+    this.moonGroup = moonGroup || null;
+    this._syncEarthState();
+  }
+
+  onPhysicalStateChange(callback) {
+    this._onPhysicalStateChangeCallback = callback;
+  }
+
+  _isCislunarPhysicsActive() {
+    return this.viewMode === VIEW_MODES.CISLUNAR && Boolean(this._parsedTrajectory);
+  }
+
+  _applyCislunarPhysicalStateAtTime(t_s) {
+    if (!this._parsedTrajectory) return null;
+
+    const phys = TrajectoryGenerator.evaluatePhysicalSceneAtTime(this._parsedTrajectory, t_s, {
+      cislunarDistance: this.cislunarEarthDistance,
+    });
+
+    this._sunDir.set(phys.sunDirScene[0], phys.sunDirScene[1], phys.sunDirScene[2]).normalize();
+    this.sunGroup.position.copy(this._sunDir).multiplyScalar(this.sunDistance);
+
+    this._earthDir
+      .set(phys.earthDirFromMoonWorld[0], phys.earthDirFromMoonWorld[1], phys.earthDirFromMoonWorld[2])
+      .normalize();
+
+    if (this.earthGroup) {
+      this.earthGroup.visible = true;
+      this.earthGroup.position.set(0, 0, 0);
+      if (this.earthGroup.userData?.update) {
+        this.earthGroup.userData.update(this._sunDir, undefined, phys.earthQuaternionScene);
+      }
+    }
+
+    if (this.moonGroup) {
+      this.moonGroup.position.set(
+        phys.moonPositionScene[0],
+        phys.moonPositionScene[1],
+        phys.moonPositionScene[2]
+      );
+      this.moonGroup.quaternion.set(
+        phys.moonQuaternionScene[0],
+        phys.moonQuaternionScene[1],
+        phys.moonQuaternionScene[2],
+        phys.moonQuaternionScene[3]
+      );
+    }
+
+    this.celestialSphereGroup.quaternion.set(
+      phys.skyQuaternionScene[0],
+      phys.skyQuaternionScene[1],
+      phys.skyQuaternionScene[2],
+      phys.skyQuaternionScene[3]
+    );
+
+    this._onPhysicalStateChangeCallback?.(phys);
+    return phys;
   }
 
   _bvToRgb(bvRaw) {
@@ -407,11 +491,57 @@ export class CelestialEnvironment {
     this.earthAtmoMaterial = atmosphereMaterial;
   }
 
+  _rebuildTrajectoryIfNeeded() {
+    if (!this._parsedTrajectory) return;
+    const needsRebuild = this._trajectoryDirty || !this._generatedTrajectory;
+    if (!needsRebuild) return;
+
+    const generated = TrajectoryGenerator.generateCislunarPath(this._parsedTrajectory, {
+      earthRadius: this.earthRadius,
+      moonRadius: MOON_CONFIG.RADIUS,
+      cislunarDistance: this.cislunarEarthDistance,
+    });
+    const preserveTime = !this._trajectoryDirty && Boolean(this._generatedTrajectory);
+    this._generatedTrajectory = generated;
+    this._trajectoryDirty = false;
+    this.trajectoryRenderer.setGeneratedTrajectory(generated, { preserveTime });
+  }
+
+  _syncTrajectoryState() {
+    const shouldShow =
+      this.viewMode === VIEW_MODES.CISLUNAR &&
+      this._trajectoryUserVisible &&
+      Boolean(this._parsedTrajectory);
+
+    if (shouldShow) {
+      this._rebuildTrajectoryIfNeeded();
+    }
+    this.trajectoryRenderer.setVisible(shouldShow);
+  }
+
   _syncEarthState() {
-    if (!this.earthGroup) return;
-    // Місяць залишається в (0, 0, 0), Земля розміщена вздовж осі -X на стисненій дистанції
-    this.earthGroup.position.set(-this.cislunarEarthDistance, 0, 0);
-    this.earthGroup.visible = this.viewMode === VIEW_MODES.CISLUNAR;
+    if (this._isCislunarPhysicsActive()) {
+      this._syncTrajectoryState();
+      this._applyCislunarPhysicalStateAtTime(this.trajectoryRenderer.getTimeSeconds());
+      return;
+    }
+
+    if (this.moonGroup) {
+      this.moonGroup.position.set(0, 0, 0);
+      this.moonGroup.quaternion.identity();
+    }
+    this.celestialSphereGroup.quaternion.setFromEuler(this._lunarSkyEuler);
+
+    if (this.earthGroup) {
+      this.earthGroup.visible = true;
+      const distance =
+        this.viewMode === VIEW_MODES.CISLUNAR
+          ? this.cislunarEarthDistance
+          : this._currentEarthDistance;
+      // У режимі LUNAR Земля завжди розташована вздовж реального вектора Місяць -> Земля (_earthDir)
+      this.earthGroup.position.copy(this._earthDir).multiplyScalar(distance);
+    }
+    this._syncTrajectoryState();
   }
 
   setViewMode(mode) {
@@ -422,6 +552,66 @@ export class CelestialEnvironment {
     this.viewMode = normalized;
     this._syncEarthState();
     return this.viewMode;
+  }
+
+  setTrajectoryDocument(jsonDoc, options = {}) {
+    const parsed = TrajectoryGenerator.parse(jsonDoc, options);
+    this._parsedTrajectory = parsed;
+    this._trajectoryDirty = true;
+
+    this._rebuildTrajectoryIfNeeded();
+    this._syncEarthState();
+    this._onTrajectoryLoadedCallback?.(this.getTrajectoryInfo());
+    return this.getTrajectoryInfo();
+  }
+
+  async loadTrajectory(url, options = {}) {
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch trajectory (${res.status}): ${url}`);
+    }
+    const jsonDoc = await res.json();
+    return this.setTrajectoryDocument(jsonDoc, options);
+  }
+
+  setTrajectoryVisible(visible) {
+    this._trajectoryUserVisible = Boolean(visible);
+    this._syncTrajectoryState();
+  }
+
+  isTrajectoryVisible() {
+    return this._trajectoryUserVisible;
+  }
+
+  setTrajectoryPlaying(playing) {
+    this.trajectoryRenderer.setPlaying(playing);
+  }
+
+  setTrajectoryTime(t_s) {
+    return this.trajectoryRenderer.setTimeSeconds(t_s);
+  }
+
+  onTrajectoryTelemetryTick(callback) {
+    this._externalTelemetryTickCallback = callback;
+  }
+
+  onTrajectoryLoaded(callback) {
+    this._onTrajectoryLoadedCallback = callback;
+  }
+
+  getTrajectoryInfo() {
+    if (!this._parsedTrajectory) return null;
+    return {
+      meta: this._parsedTrajectory.meta,
+      landingSite: this._parsedTrajectory.landingSite,
+      spaceport: this._parsedTrajectory.spaceport,
+      phases: this._parsedTrajectory.phases,
+      events: this._generatedTrajectory?.events || this._parsedTrajectory.events,
+      segments: this._generatedTrajectory?.segments || [],
+      isPlaying: this.trajectoryRenderer.isPlaying(),
+      currentTimeSec: this.trajectoryRenderer.getTimeSeconds(),
+      userVisible: this._trajectoryUserVisible,
+    };
   }
 
   _createSunModel() {
@@ -463,7 +653,7 @@ export class CelestialEnvironment {
   }
 
   updatePositions(ephemData, date = new Date()) {
-    if (!ephemData) return;
+    if (!ephemData || this._isCislunarPhysicsActive()) return;
 
     this._latLonToDirection(
       ephemData.subSunLon ?? ephemData.subSolarLon,
@@ -471,6 +661,10 @@ export class CelestialEnvironment {
       this._sunDir
     );
     this._latLonToDirection(ephemData.subEarthLon, ephemData.subEarthLat, this._earthDir);
+
+    this._currentEarthDistance = ephemData.earthDistanceKm
+      ? ephemData.earthDistanceKm / (MOON_CONFIG.RADIUS * MOON_CONFIG.RADIUS_KM)
+      : this.earthDistance;
 
     this.sunGroup.position.copy(this._sunDir).multiplyScalar(this.sunDistance);
     this._syncEarthState();
@@ -486,6 +680,9 @@ export class CelestialEnvironment {
     }
     if (this.sunBillboard && camera) {
       this.sunBillboard.quaternion.copy(camera.quaternion);
+    }
+    if (this.viewMode === VIEW_MODES.CISLUNAR) {
+      this.trajectoryRenderer.update(camera, elapsedSeconds);
     }
   }
 

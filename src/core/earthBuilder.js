@@ -503,7 +503,7 @@ export class EarthBuilder {
         earthUniforms.uDayMap.value = nextTexture || null;
         earthUniforms.uUseDayMap.value = Boolean(nextTexture);
       },
-      update(sunDir, elapsedSeconds, date) {
+      update(sunDir, elapsedSeconds, dateOrQuat) {
         if (sunDir) {
           earthUniforms.uSunDirection.value.copy(sunDir);
         }
@@ -511,9 +511,15 @@ export class EarthBuilder {
           earthUniforms.uTime.value = elapsedSeconds;
           earthUniforms.uCloudDrift.value = (elapsedSeconds * 0.00045) % 1.0;
         }
-        if (date instanceof Date) {
+        if (Array.isArray(dateOrQuat) && dateOrQuat.length === 4) {
+          earthGroup.quaternion.set(dateOrQuat[0], dateOrQuat[1], dateOrQuat[2], dateOrQuat[3]);
+          surfaceMesh.rotation.y = 0;
+        } else if (dateOrQuat instanceof Date) {
+          earthGroup.rotation.set(0, 0, THREE.MathUtils.degToRad(axialTiltDeg));
           const utcHours =
-            date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+            dateOrQuat.getUTCHours() +
+            dateOrQuat.getUTCMinutes() / 60 +
+            dateOrQuat.getUTCSeconds() / 3600;
           surfaceMesh.rotation.y = (utcHours / 24) * Math.PI * 2;
         }
       },

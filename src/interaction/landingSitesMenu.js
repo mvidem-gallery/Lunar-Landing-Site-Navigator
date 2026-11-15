@@ -121,6 +121,9 @@ export class LandingSitesMenu {
     this._pins = [];
     this._camDir = new THREE.Vector3();
     this._projVec = new THREE.Vector3();
+    this._localCamPos = new THREE.Vector3();
+    this._invWorldMatrix = new THREE.Matrix4();
+    this._zAxis = new THREE.Vector3(0, 0, 1);
 
     this._buildDOM();
     this._bindEvents();
@@ -852,7 +855,7 @@ export class LandingSitesMenu {
     marker.add(outerMesh, innerMesh);
 
     marker.position.copy(normal).multiplyScalar(this.surfaceRadius);
-    marker.lookAt(normal.x * 2, normal.y * 2, normal.z * 2);
+    marker.quaternion.setFromUnitVectors(this._zAxis, normal);
     marker.renderOrder = isSelected ? 18 : 16;
     this.group.add(marker);
 
@@ -891,7 +894,9 @@ export class LandingSitesMenu {
     if (!camera || this._pins.length === 0) return;
 
     camera.updateMatrixWorld();
-    const camPos = camera.position;
+    this.group.updateWorldMatrix(true, false);
+    this._invWorldMatrix.copy(this.group.matrixWorld).invert();
+    const camPos = this._localCamPos.copy(camera.position).applyMatrix4(this._invWorldMatrix);
     const camDist = camPos.length();
     if (camDist <= 0.0001) return;
 
@@ -915,7 +920,11 @@ export class LandingSitesMenu {
         continue;
       }
 
-      this._projVec.copy(pin.normal).multiplyScalar(this.surfaceRadius).project(camera);
+      this._projVec
+        .copy(pin.normal)
+        .multiplyScalar(this.surfaceRadius)
+        .applyMatrix4(this.group.matrixWorld)
+        .project(camera);
       if (
         this._projVec.z > 1.0 ||
         this._projVec.x < -1.05 ||

@@ -168,6 +168,9 @@ export class MissionPanel {
     this._renderedMeasurements = [];
     this._camDir = new THREE.Vector3();
     this._projVec = new THREE.Vector3();
+    this._localCamPos = new THREE.Vector3();
+    this._invWorldMatrix = new THREE.Matrix4();
+    this._zAxis = new THREE.Vector3(0, 0, 1);
 
     this._buildDOM();
     this._bindEvents();
@@ -815,7 +818,7 @@ export class MissionPanel {
       marker.add(outer, inner);
 
       marker.position.copy(normal).multiplyScalar(this.surfaceRadius);
-      marker.lookAt(normal.x * 2, normal.y * 2, normal.z * 2);
+      marker.quaternion.setFromUnitVectors(this._zAxis, normal);
       marker.renderOrder = 15;
       this.group.add(marker);
 
@@ -839,7 +842,7 @@ export class MissionPanel {
         const n = normals[i];
         const dot = new THREE.Mesh(this._markerInnerGeo, this._rulerVertexMat);
         dot.position.copy(n).multiplyScalar(this.rulerArcRadius);
-        dot.lookAt(n.x * 2, n.y * 2, n.z * 2);
+        dot.quaternion.setFromUnitVectors(this._zAxis, n);
         dot.renderOrder = 14;
         this.group.add(dot);
         dots.push(dot);
@@ -880,7 +883,9 @@ export class MissionPanel {
     if (this._renderedPoints.length === 0 && this._renderedMeasurements.length === 0) return;
 
     camera.updateMatrixWorld();
-    const camPos = camera.position;
+    this.group.updateWorldMatrix(true, false);
+    this._invWorldMatrix.copy(this.group.matrixWorld).invert();
+    const camPos = this._localCamPos.copy(camera.position).applyMatrix4(this._invWorldMatrix);
     const camDist = camPos.length();
     if (camDist <= 0.0001) return;
 
@@ -896,7 +901,11 @@ export class MissionPanel {
         el.style.display = 'none';
         return;
       }
-      this._projVec.copy(normal).multiplyScalar(radius).project(camera);
+      this._projVec
+        .copy(normal)
+        .multiplyScalar(radius)
+        .applyMatrix4(this.group.matrixWorld)
+        .project(camera);
       if (
         this._projVec.z > 1.0 ||
         this._projVec.x < -1.05 ||
