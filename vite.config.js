@@ -4,6 +4,7 @@ import { gdriveAssetsPlugin } from './src/gdrive/vitePlugin.mjs';
 import { lunarHorizonPlugin } from './src/lunar-horizon/vitePlugin.mjs';
 import { trajectoryServicePlugin } from './src/trajectory/vitePlugin.mjs';
 import { reportServicePlugin } from './src/report/vitePlugin.mjs';
+import { datatablePlugin } from './src/datatable/vitePlugin.mjs';
 
 const sharedProxy = {
   [PROXY_CONFIG.OPM_TILES_PATH]: {
@@ -29,6 +30,7 @@ export default defineConfig({
     lunarHorizonPlugin(),
     trajectoryServicePlugin(),
     reportServicePlugin(),
+    datatablePlugin(),
   ],
   build: {
     copyPublicDir: process.env.GDRIVE_PREFER_LOCAL === '1',

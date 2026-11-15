@@ -493,63 +493,119 @@ function isArtemisDefaultLandingWindow(lw) {
   );
 }
 
+function extractLaunchWindowRefineFlag(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+  const adv = input.advanced && typeof input.advanced === 'object' ? input.advanced : {};
+  const raw =
+    input.launch_window_refine ??
+    input.launchWindowRefine ??
+    adv.launch_window_refine ??
+    adv.launchWindowRefine ??
+    null;
+  return raw === true || raw === 'true';
+}
+
 function formatTomlFloat(num) {
   const n = Number(num);
   return Number.isInteger(n) ? `${n}.0` : String(n);
 }
 
-export function buildTransferTomlWithLandingWindow(baseTomlText, landingWindow) {
-  const sectionLines = [
-    '[landing_window]',
-    `require_sun_visible = ${landingWindow.require_sun_visible ? 'true' : 'false'}`,
-    `sun_elevation_min_deg = ${formatTomlFloat(landingWindow.sun_elevation_min_deg)}`,
-    `sun_elevation_max_deg = ${formatTomlFloat(landingWindow.sun_elevation_max_deg)}`,
-    `require_earth_visible = ${landingWindow.require_earth_visible ? 'true' : 'false'}`,
-    `max_wait_in_orbit_h = ${formatTomlFloat(landingWindow.max_wait_in_orbit_h)}`,
-  ];
-
+export function buildTransferTomlWithLandingWindow(
+  baseTomlText,
+  landingWindow,
+  { launchWindowRefine = null } = {}
+) {
   const source = typeof baseTomlText === 'string' ? baseTomlText.replace(/^\uFEFF/, '') : '';
+  const hasLw = Boolean(landingWindow);
+  const sectionLines = hasLw
+    ? [
+        '[landing_window]',
+        `require_sun_visible = ${landingWindow.require_sun_visible ? 'true' : 'false'}`,
+        `sun_elevation_min_deg = ${formatTomlFloat(landingWindow.sun_elevation_min_deg)}`,
+        `sun_elevation_max_deg = ${formatTomlFloat(landingWindow.sun_elevation_max_deg)}`,
+        `require_earth_visible = ${landingWindow.require_earth_visible ? 'true' : 'false'}`,
+        `max_wait_in_orbit_h = ${formatTomlFloat(landingWindow.max_wait_in_orbit_h)}`,
+      ]
+    : [];
+
   if (!source.trim()) {
-    return `${sectionLines.join('\n')}\n`;
+    const parts = [...sectionLines];
+    if (launchWindowRefine === true) {
+      if (parts.length > 0) parts.push('');
+      parts.push('[launch_window]', 'refine = true');
+    }
+    return parts.length > 0 ? `${parts.join('\n')}\n` : '';
   }
 
   const lines = source.split(/\r?\n/);
   const out = [];
   let inLandingWindow = false;
-  let replaced = false;
+  let replacedLw = false;
+  let inLaunchWindow = false;
+  let replacedLaunchWindowRefine = false;
+  let hasLaunchWindowSection = false;
 
   for (const line of lines) {
     const trimmed = stripTomlComment(line).trim();
-    if (trimmed === '[landing_window]') {
-      inLandingWindow = true;
-      if (!replaced) {
-        out.push(...sectionLines);
-        replaced = true;
+    if (trimmed.startsWith('[')) {
+      if (inLaunchWindow && launchWindowRefine === true && !replacedLaunchWindowRefine) {
+        out.push('refine = true');
+        replacedLaunchWindowRefine = true;
       }
+      inLandingWindow = trimmed === '[landing_window]';
+      inLaunchWindow = trimmed === '[launch_window]';
+      if (inLaunchWindow) hasLaunchWindowSection = true;
+      if (inLandingWindow && hasLw) {
+        if (!replacedLw) {
+          out.push(...sectionLines);
+          replacedLw = true;
+        }
+        continue;
+      }
+    }
+    if (inLandingWindow && hasLw) {
       continue;
     }
-    if (inLandingWindow && trimmed.startsWith('[')) {
-      inLandingWindow = false;
+    if (inLaunchWindow && launchWindowRefine === true && /^refine\s*=/.test(trimmed)) {
+      out.push('refine = true');
+      replacedLaunchWindowRefine = true;
+      continue;
     }
-    if (!inLandingWindow) {
-      out.push(line);
-    }
+    out.push(line);
   }
 
-  if (!replaced) {
+  if (inLaunchWindow && launchWindowRefine === true && !replacedLaunchWindowRefine) {
+    out.push('refine = true');
+    replacedLaunchWindowRefine = true;
+  }
+
+  if (hasLw && !replacedLw) {
     if (out.length > 0 && out[out.length - 1].trim() !== '') {
       out.push('');
     }
     out.push(...sectionLines);
   }
 
+  if (launchWindowRefine === true && !hasLaunchWindowSection) {
+    if (out.length > 0 && out[out.length - 1].trim() !== '') {
+      out.push('');
+    }
+    out.push('[launch_window]', 'refine = true');
+  }
+
   return `${out.join('\n').replace(/\n*$/, '\n')}`;
 }
 
-export function materializeTransferConfigFile(landingWindow, configDir = GENERATED_TRANSFER_CONFIG_DIR) {
+export function materializeTransferConfigFile(
+  landingWindow,
+  configDir = GENERATED_TRANSFER_CONFIG_DIR,
+  { launchWindowRefine = null } = {}
+) {
   const baseTransferPath = path.join(LWP_DIR, 'data', 'transfer.toml');
   const baseToml = fs.existsSync(baseTransferPath) ? fs.readFileSync(baseTransferPath, 'utf8') : '';
-  const tomlText = buildTransferTomlWithLandingWindow(baseToml, landingWindow);
+  const tomlText = buildTransferTomlWithLandingWindow(baseToml, landingWindow, {
+    launchWindowRefine,
+  });
   const hash = crypto.createHash('sha256').update(tomlText, 'utf8').digest('hex').slice(0, 12);
 
   fs.mkdirSync(configDir, { recursive: true });
@@ -619,6 +675,98 @@ export function normalizeGenerationInput(input = {}) {
       );
     }
     request.trajectory = normTraj;
+  }
+
+  const rawFlightMode =
+    input.flightMode ?? input.flight_mode ?? adv.flightMode ?? adv.flight_mode ?? null;
+  const rawMode = input.mode ?? adv.mode ?? null;
+  const rawLaunchWindow =
+    input.launch_window ?? input.launchWindow ?? adv.launch_window ?? adv.launchWindow ?? null;
+  const rawMargin =
+    input.launch_window_margin_m_s ??
+    input.launchWindowMarginMs ??
+    input.launchWindowMargin ??
+    adv.launch_window_margin_m_s ??
+    adv.launchWindowMarginMs ??
+    adv.launchWindowMargin ??
+    null;
+
+  let resolvedFlightMode = null;
+  if (typeof rawFlightMode === 'string' && rawFlightMode.trim()) {
+    const fm = rawFlightMode.trim().toLowerCase();
+    if (fm !== 'fast' && fm !== 'economy' && fm !== 'launch_window') {
+      throw new TrajectoryServiceError(
+        `Invalid flightMode "${rawFlightMode}" (expected "fast", "economy", or "launch_window")`,
+        { statusCode: 400, code: 'bad_request' }
+      );
+    }
+    resolvedFlightMode = fm;
+  }
+
+  let explicitMode = null;
+  if (typeof rawMode === 'string' && rawMode.trim()) {
+    const m = rawMode.trim().toLowerCase();
+    if (m !== 'fast' && m !== 'economy') {
+      throw new TrajectoryServiceError(
+        `Invalid mode "${rawMode}" (expected "fast" or "economy")`,
+        { statusCode: 400, code: 'bad_request' }
+      );
+    }
+    explicitMode = m;
+  }
+
+  const wantsLaunchWindow =
+    rawLaunchWindow === true ||
+    rawLaunchWindow === 'true' ||
+    (rawLaunchWindow !== false && rawLaunchWindow !== 'false' && resolvedFlightMode === 'launch_window');
+
+  if (wantsLaunchWindow && explicitMode) {
+    throw new TrajectoryServiceError(
+      'launch_window replaces mode: give one of them',
+      { statusCode: 400, code: 'bad_request' }
+    );
+  }
+
+  if (wantsLaunchWindow) {
+    if (request.launch_date) {
+      throw new TrajectoryServiceError(
+        'launch_window is searched only for a landing day: give arrival_date, not launch_date',
+        { statusCode: 400, code: 'bad_request' }
+      );
+    }
+    if (!request.arrival_date) {
+      throw new TrajectoryServiceError(
+        'launch_window needs arrival_date (the landing day)',
+        { statusCode: 400, code: 'bad_request' }
+      );
+    }
+    request.launch_window = true;
+  } else {
+    const finalMode =
+      explicitMode ||
+      (resolvedFlightMode === 'economy' || resolvedFlightMode === 'fast'
+        ? resolvedFlightMode
+        : null);
+    if (finalMode) {
+      request.mode = finalMode;
+    }
+  }
+
+  if (rawMargin !== null && rawMargin !== undefined && rawMargin !== '') {
+    const margin = Number(rawMargin);
+    if (!Number.isFinite(margin) || margin < 0 || margin > 5000) {
+      throw new TrajectoryServiceError(
+        'launch_window_margin_m_s must be in [0, 5000] m/s',
+        { statusCode: 400, code: 'bad_request' }
+      );
+    }
+    if (!request.launch_window) {
+      throw new TrajectoryServiceError(
+        'launch_window_margin_m_s needs "launch_window": true',
+        { statusCode: 400, code: 'bad_request' }
+      );
+    }
+    request.launch_window_margin_m_s = margin;
   }
 
   const rawSpaceport = input.spaceport ?? adv.spaceport ?? null;
@@ -907,8 +1055,14 @@ export async function submitTrajectoryJob(
 ) {
   const request = normalizeGenerationInput(input);
   const landingWindow = extractLandingWindowConfig(input);
-  if (!request.transfer_config && landingWindow && !isArtemisDefaultLandingWindow(landingWindow)) {
-    request.transfer_config = materializeTransferConfigFile(landingWindow, transferConfigDir);
+  const launchWindowRefine = Boolean(request.launch_window) && extractLaunchWindowRefineFlag(input);
+  const needsCustomLw = Boolean(landingWindow && !isArtemisDefaultLandingWindow(landingWindow));
+  if (!request.transfer_config && (needsCustomLw || launchWindowRefine)) {
+    request.transfer_config = materializeTransferConfigFile(
+      needsCustomLw ? landingWindow : null,
+      transferConfigDir,
+      { launchWindowRefine }
+    );
   }
 
   const args = wait ? ['submit', '--wait'] : ['submit'];

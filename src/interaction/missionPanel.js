@@ -18,8 +18,10 @@ import {
   normalizeMission,
   parseCatalogSiteDateIso,
   parseDatetimeLocalUtc,
+  resolveMissionFlightMode,
   toDatetimeLocalUtc,
 } from '../data/missionModel.js';
+import { parseUtcStringToMs } from '../astronomy/trajectoryGenerator.js';
 import { NASA_MOON_EXPLORATION_SITES } from '../data/lunarLandingSites.js';
 import { deleteTrajectoryDoc, saveTrajectoryDoc } from '../data/trajectoryStorage.js';
 import {
@@ -82,6 +84,8 @@ export class MissionPanel {
    * @param {Function|null} [options.onSetTrajectoryVisible]
    * @param {Function|null} [options.onOpenCislunarView]
    * @param {Function|null} [options.onLandToMissionTarget]
+   * @param {Function|null} [options.onOpenDashboard]
+   * @param {Function|null} [options.onFlightLogGenerated]
    * @param {Function|null} [options.getCurrentTimelineDate]
    * @param {Function|null} [options.onJumpTimelineToDate]
    * @param {Function|null} [options.getViewMode]
@@ -102,6 +106,8 @@ export class MissionPanel {
     onSetTrajectoryVisible = null,
     onOpenCislunarView = null,
     onLandToMissionTarget = null,
+    onOpenDashboard = null,
+    onFlightLogGenerated = null,
     getCurrentTimelineDate = null,
     onJumpTimelineToDate = null,
     getViewMode = null,
@@ -121,6 +127,8 @@ export class MissionPanel {
     this.onSetTrajectoryVisible = onSetTrajectoryVisible;
     this.onOpenCislunarView = onOpenCislunarView;
     this.onLandToMissionTarget = onLandToMissionTarget;
+    this.onOpenDashboard = onOpenDashboard;
+    this.onFlightLogGenerated = onFlightLogGenerated;
     this.getCurrentTimelineDate = getCurrentTimelineDate;
     this.onJumpTimelineToDate = onJumpTimelineToDate;
     this.getViewMode = getViewMode;
@@ -167,6 +175,11 @@ export class MissionPanel {
     this._canSaveRuler = false;
     this._activePickTarget = null;
     this._collapsedSections = new Set();
+    this._solverUiMissionId = null;
+    this._solverUiMode = 'fast';
+    this._solverUiMarginMs = '50';
+    this._solverUiRefine = true;
+    this._solverUiShowAllDays = false;
 
     this.surfaceRadius = MOON_CONFIG.RADIUS + 0.000026;
     this.targetRadius = MOON_CONFIG.RADIUS + 0.000032;
@@ -282,6 +295,10 @@ export class MissionPanel {
     );
   }
 
+  getAllMissions() {
+    return this.missions;
+  }
+
   _touchMission(mission) {
     if (mission) {
       mission.updatedAt = new Date().toISOString();
@@ -387,6 +404,9 @@ export class MissionPanel {
       maxWaitInOrbitH: '48',
       noTerrain: false,
       noCache: false,
+      flightMode: 'fast',
+      launchWindowMarginMs: '50',
+      launchWindowRefine: true,
       notes: '',
     };
   }
@@ -562,6 +582,10 @@ export class MissionPanel {
         this._syncNewMissionDraftFromDom();
         return;
       }
+      if (e.target.matches('[data-field="solver-window-margin"]')) {
+        this._solverUiMarginMs = e.target.value ?? '';
+        return;
+      }
       if (e.target.matches('[data-field="list-search"]')) {
         this._listSearchQuery = e.target.value || '';
         this._renderMissionCardsOnly();
@@ -619,7 +643,13 @@ export class MissionPanel {
           this.render();
         } else if (e.target.matches('[data-field="new-mission-req-sun"]')) {
           this.render();
+        } else if (e.target.matches('[data-field="new-mission-date-mode"]')) {
+          this.render();
         }
+        return;
+      }
+      if (e.target.matches('[data-field="solver-window-refine"]')) {
+        this._solverUiRefine = Boolean(e.target.checked);
         return;
       }
       const mission = this.getActiveMission();
@@ -714,6 +744,21 @@ export class MissionPanel {
         this._isNewMissionAdvancedOpen = !this._isNewMissionAdvancedOpen;
         this.render();
         break;
+      case 'set-draft-flight-mode': {
+        if (this._isCreatingMission) break;
+        this._syncNewMissionDraftFromDom();
+        const mode = btn.dataset.flightMode;
+        if (mode === 'fast' || mode === 'economy' || mode === 'launch_window') {
+          this._newMissionDraft.flightMode = mode;
+          if (mode === 'launch_window') {
+            this._newMissionDraft.dateMode = 'arrival';
+          }
+          this._newMissionFormError = '';
+          this._newMissionErrorKind = null;
+          this.render();
+        }
+        break;
+      }
       case 'cancel-new-mission':
         if (this._isCreatingMission) {
           this._createMissionAbort?.abort();
@@ -932,6 +977,69 @@ export class MissionPanel {
       case 'cancel-recalc-traj':
         this.cancelTrajectoryRecalculation();
         break;
+      case 'set-active-solver-mode': {
+        const mode = btn.dataset.flightMode;
+        if (mission && (mode === 'fast' || mode === 'economy' || mode === 'launch_window')) {
+          this._syncSolverUiToMission(mission);
+          this._solverUiMode = mode;
+          this.render();
+        }
+        break;
+      }
+      case 'recalc-mission-mode': {
+        if (!mission || !mission.landingSite || this._isRecalculatingTraj) break;
+        this._syncSolverUiToMission(mission);
+        const marginEl = this.contentHostEl?.querySelector('[data-field="solver-window-margin"]');
+        if (marginEl) this._solverUiMarginMs = marginEl.value ?? '';
+        const refineEl = this.contentHostEl?.querySelector('[data-field="solver-window-refine"]');
+        if (refineEl) this._solverUiRefine = Boolean(refineEl.checked);
+
+        const mode = this._solverUiMode;
+        let marginMs = null;
+        if (mode === 'launch_window') {
+          const raw = String(this._solverUiMarginMs ?? '').trim();
+          if (raw !== '') {
+            const parsed = Number.parseFloat(raw);
+            if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5000) {
+              this._recalcTrajMissionId = mission.id;
+              this._recalcTrajError = 'Launch window Δv margin must be between 0 and 5000 m/s.';
+              this._trajErrorMsg = this._recalcTrajError;
+              this.render();
+              break;
+            }
+            marginMs = parsed;
+          }
+        }
+        this._recalculateTrajectoryForMission(mission, {
+          flightMode: mode,
+          launchWindowMarginMs: marginMs,
+          launchWindowRefine: Boolean(this._solverUiRefine),
+        });
+        break;
+      }
+      case 'toggle-economy-days':
+        this._solverUiShowAllDays = !this._solverUiShowAllDays;
+        this.render();
+        break;
+      case 'sync-window-optimum': {
+        const opt = mission?.modules?.generation?.launchWindow?.optimum;
+        if (mission && opt) {
+          const launchIso = this._solverUtcToIso(opt.launch_utc);
+          const landingIso = this._solverUtcToIso(opt.touchdown_utc || opt.lunar_orbit_insertion_utc);
+          if (launchIso || landingIso) {
+            this.updateActiveFlightDates({
+              ...(launchIso ? { launchDateIso: launchIso } : {}),
+              ...(landingIso ? { landingDateIso: landingIso } : {}),
+              dateSource: 'trajectory',
+            });
+            if (landingIso) {
+              const d = new Date(landingIso);
+              if (!Number.isNaN(d.getTime())) this.onJumpTimelineToDate?.(d);
+            }
+          }
+        }
+        break;
+      }
       case 'land-to-target':
         if (mission?.landingSite && typeof this.onLandToMissionTarget === 'function') {
           this.onLandToMissionTarget(mission);
@@ -1012,6 +1120,9 @@ export class MissionPanel {
         break;
       case 'open-cislunar':
         this.onOpenCislunarView?.();
+        break;
+      case 'open-dashboard':
+        this.onOpenDashboard?.(mission);
         break;
       case 'sync-from-traj':
         if (mission?.trajectory?.meta) {
@@ -1226,6 +1337,17 @@ export class MissionPanel {
       noCache:
         formEl.querySelector('[data-field="new-mission-no-cache"]')?.checked ??
         Boolean(prev.noCache),
+      flightMode:
+        formEl.querySelector('[data-field="new-mission-flight-mode"]')?.value ??
+        prev.flightMode ??
+        'fast',
+      launchWindowMarginMs:
+        formEl.querySelector('[data-field="new-mission-window-margin"]')?.value ??
+        prev.launchWindowMarginMs ??
+        '50',
+      launchWindowRefine:
+        formEl.querySelector('[data-field="new-mission-window-refine"]')?.checked ??
+        (prev.launchWindowRefine !== false),
       notes: formEl.querySelector('[data-field="new-mission-notes"]')?.value ?? prev.notes ?? '',
     };
   }
@@ -1342,7 +1464,42 @@ export class MissionPanel {
       return;
     }
 
-    const dateMode = draft.dateMode === 'launch' ? 'launch' : 'arrival';
+    const flightMode =
+      draft.flightMode === 'economy' || draft.flightMode === 'launch_window'
+        ? draft.flightMode
+        : 'fast';
+    const dateMode =
+      flightMode === 'launch_window'
+        ? 'arrival'
+        : draft.dateMode === 'launch'
+          ? 'launch'
+          : 'arrival';
+
+    if (flightMode === 'launch_window' && !inputDateIso) {
+      this._newMissionFormError = 'Launch window search requires a Landing Date (UTC).';
+      this._newMissionErrorKind = null;
+      this.render();
+      return;
+    }
+
+    let launchWindowMarginMs = null;
+    if (flightMode === 'launch_window') {
+      const rawMargin = String(draft.launchWindowMarginMs ?? '').trim();
+      if (rawMargin !== '') {
+        const parsed = Number.parseFloat(rawMargin);
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5000) {
+          this._newMissionFormError = 'Launch window Δv margin must be between 0 and 5000 m/s.';
+          this._newMissionErrorKind = null;
+          this.render();
+          return;
+        }
+        launchWindowMarginMs = parsed;
+      }
+    }
+
+    const launchWindowRefine =
+      flightMode === 'launch_window' ? draft.launchWindowRefine !== false : false;
+
     const genPayload = {
       dateMode,
       ...(inputDateIso
@@ -1353,6 +1510,11 @@ export class MissionPanel {
       ...(landingSite ? { landingSite: { lat: landingSite.lat, lon: landingSite.lon } } : {}),
       advanced: {
         trajectory: draft.trajectoryType === 'hohmann' ? 'hohmann' : 'direct',
+        flightMode,
+        ...(flightMode === 'launch_window' && launchWindowMarginMs !== null
+          ? { launchWindowMarginMs }
+          : {}),
+        ...(flightMode === 'launch_window' ? { launchWindowRefine } : {}),
         spaceport: draft.spaceport || null,
         rocket: draft.rocket || null,
         spacecraft: draft.spacecraft || null,
@@ -1368,7 +1530,12 @@ export class MissionPanel {
     this._newMissionErrorKind = null;
     this._isCreatingMission = true;
     this._createMissionAbort = abortCtrl;
-    this._createMissionStatus = 'Submitting mission to trajectory solver...';
+    this._createMissionStatus =
+      flightMode === 'economy'
+        ? 'Submitting economy search (±3 days) to trajectory solver...'
+        : flightMode === 'launch_window'
+          ? 'Submitting launch window search to trajectory solver...'
+          : 'Submitting mission to trajectory solver...';
     this.render();
 
     try {
@@ -1388,10 +1555,20 @@ export class MissionPanel {
       if (statusEl) statusEl.textContent = this._createMissionStatus;
 
       const missionId = `mission-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const docId = `traj-${missionId}-${Date.now()}`;
-      await saveTrajectoryDoc(docId, result.trajectory);
+      let docId = null;
+      if (result.trajectory) {
+        docId = `traj-${missionId}-${Date.now()}`;
+        await saveTrajectoryDoc(docId, result.trajectory);
+      }
+
+      let flightLogDocId = null;
+      if (result.log && typeof result.log === 'object') {
+        flightLogDocId = `flog-${missionId}-${Date.now()}`;
+        await saveTrajectoryDoc(flightLogDocId, result.log);
+      }
 
       const schedule = extractScheduleFromGeneratedResult(result);
+      const summarySection = result.summary?.summary || null;
       const resolvedLandingSite =
         landingSite ||
         (Number.isFinite(schedule.landingLatDeg) && Number.isFinite(schedule.landingLonDeg)
@@ -1411,21 +1588,37 @@ export class MissionPanel {
         landingDateIso: schedule.landingDateIso || (dateMode === 'arrival' ? inputDateIso : null),
         transitDurationSec: schedule.transitDurationSec,
         dateSource: 'trajectory',
-        trajectory: {
-          sourceType: 'uploaded',
-          docId,
-          fileName: `trajectory-${result.job.job_id}.json`,
-          visible: true,
-          meta: null,
-        },
+        trajectory: docId
+          ? {
+              sourceType: 'uploaded',
+              docId,
+              fileName: `trajectory-${result.job.job_id}.json`,
+              visible: true,
+              meta: null,
+            }
+          : {
+              sourceType: 'none',
+              url: null,
+              docId: null,
+              fileName: null,
+              visible: true,
+              meta: null,
+            },
         notes,
         generation: {
           jobId: result.job.job_id,
+          flightLogDocId,
           outcome: result.job.outcome || 'done',
           elapsedS: result.job.elapsed_s ?? null,
+          flightMode,
+          launchWindowMarginMs: flightMode === 'launch_window' ? launchWindowMarginMs : null,
+          launchWindowRefine: flightMode === 'launch_window' ? launchWindowRefine : null,
+          deltaV: summarySection?.delta_v || null,
+          economy: summarySection?.economy || null,
+          launchWindow: summarySection?.launch_window || null,
           request: result.request,
           payload: genPayload,
-          summaryStatus: result.summary?.summary?.status || null,
+          summaryStatus: summarySection?.status || null,
           generatedAt: new Date().toISOString(),
         },
       });
@@ -1439,9 +1632,16 @@ export class MissionPanel {
       this._detailTab = 'flight';
       this.setActiveMission(created.id, {
         reason: 'create',
-        generatedDoc: result.trajectory,
-        openTrajectoryView: true,
+        ...(result.trajectory ? { generatedDoc: result.trajectory } : {}),
+        openTrajectoryView: Boolean(result.trajectory),
       });
+      if (result.log && typeof result.log === 'object') {
+        this.onFlightLogGenerated?.({
+          mission: created,
+          flightLog: result.log,
+          filename: result.log.files?.flight_log || `flight-${result.job.job_id}.json`,
+        });
+      }
     } catch (err) {
       this._isCreatingMission = false;
       this._createMissionStatus = '';
@@ -1796,6 +1996,15 @@ export class MissionPanel {
         deleteTrajectoryDoc(target.trajectory.docId);
       }
     }
+    const targetLogDocId = target?.modules?.generation?.flightLogDocId;
+    if (targetLogDocId) {
+      const stillReferencedLog = this.missions.some(
+        (m) => m.id !== missionId && m.modules?.generation?.flightLogDocId === targetLogDocId
+      );
+      if (!stillReferencedLog) {
+        deleteTrajectoryDoc(targetLogDocId);
+      }
+    }
     this.missions = this.missions.filter((m) => m.id !== missionId);
     const switchedActive = this.activeMissionId === missionId;
     if (switchedActive) {
@@ -1836,7 +2045,10 @@ export class MissionPanel {
     this.render();
   }
 
-  async _recalculateTrajectoryForMission(mission) {
+  async _recalculateTrajectoryForMission(
+    mission,
+    { flightMode = null, launchWindowMarginMs = undefined, launchWindowRefine = undefined } = {}
+  ) {
     if (!mission?.landingSite) return;
 
     if (this._recalcTrajAbort) {
@@ -1851,14 +2063,25 @@ export class MissionPanel {
         ? tlDate.toISOString()
         : new Date().toISOString();
 
-    const genPayload = buildTrajectoryRecalcPayload(mission, { fallbackDateIso });
+    const genPayload = buildTrajectoryRecalcPayload(mission, {
+      fallbackDateIso,
+      flightMode,
+      launchWindowMarginMs,
+      launchWindowRefine,
+    });
     if (!genPayload) return;
 
+    const activeMode = genPayload.advanced?.flightMode || 'fast';
     const abortCtrl = new AbortController();
     this._recalcTrajAbort = abortCtrl;
     this._isRecalculatingTraj = true;
     this._recalcTrajMissionId = mission.id;
-    this._recalcTrajStatus = 'Recalculating trajectory for new target...';
+    this._recalcTrajStatus =
+      activeMode === 'economy'
+        ? 'Searching economy trajectory (±3 days)...'
+        : activeMode === 'launch_window'
+          ? 'Searching launch window on landing day...'
+          : 'Recalculating trajectory for target...';
     this._recalcTrajError = '';
     this._trajStatusMsg = this._recalcTrajStatus;
     this._trajErrorMsg = '';
@@ -1885,11 +2108,25 @@ export class MissionPanel {
       const targetMission = this.missions.find((m) => m.id === mission.id);
       if (!targetMission) return;
 
-      const docId = `traj-${targetMission.id}-${Date.now()}`;
-      await saveTrajectoryDoc(docId, result.trajectory);
-      if (seq !== this._recalcTrajSeq || abortCtrl.signal.aborted) {
-        deleteTrajectoryDoc(docId);
-        return;
+      let docId = null;
+      if (result.trajectory) {
+        docId = `traj-${targetMission.id}-${Date.now()}`;
+        await saveTrajectoryDoc(docId, result.trajectory);
+        if (seq !== this._recalcTrajSeq || abortCtrl.signal.aborted) {
+          deleteTrajectoryDoc(docId);
+          return;
+        }
+      }
+
+      let flightLogDocId = null;
+      if (result.log && typeof result.log === 'object') {
+        flightLogDocId = `flog-${targetMission.id}-${Date.now()}`;
+        await saveTrajectoryDoc(flightLogDocId, result.log);
+        if (seq !== this._recalcTrajSeq || abortCtrl.signal.aborted) {
+          if (docId) deleteTrajectoryDoc(docId);
+          deleteTrajectoryDoc(flightLogDocId);
+          return;
+        }
       }
 
       const oldDocId = targetMission.trajectory?.docId;
@@ -1901,16 +2138,35 @@ export class MissionPanel {
           deleteTrajectoryDoc(oldDocId);
         }
       }
+      const oldFlightLogDocId = targetMission.modules?.generation?.flightLogDocId;
+      if (oldFlightLogDocId && oldFlightLogDocId !== flightLogDocId) {
+        const stillReferencedLog = this.missions.some(
+          (m) => m.id !== targetMission.id && m.modules?.generation?.flightLogDocId === oldFlightLogDocId
+        );
+        if (!stillReferencedLog) {
+          deleteTrajectoryDoc(oldFlightLogDocId);
+        }
+      }
 
       const schedule = extractScheduleFromGeneratedResult(result);
-      targetMission.trajectory = {
-        sourceType: 'uploaded',
-        url: null,
-        docId,
-        fileName: `trajectory-${result.job.job_id}.json`,
-        visible: targetMission.trajectory?.visible !== false,
-        meta: null,
-      };
+      const summarySection = result.summary?.summary || null;
+      targetMission.trajectory = docId
+        ? {
+            sourceType: 'uploaded',
+            url: null,
+            docId,
+            fileName: `trajectory-${result.job.job_id}.json`,
+            visible: targetMission.trajectory?.visible !== false,
+            meta: null,
+          }
+        : {
+            sourceType: 'none',
+            url: null,
+            docId: null,
+            fileName: null,
+            visible: true,
+            meta: null,
+          };
       targetMission.flight = {
         launchDateIso: schedule.launchDateIso || targetMission.flight?.launchDateIso || null,
         landingDateIso: schedule.landingDateIso || targetMission.flight?.landingDateIso || null,
@@ -1923,19 +2179,39 @@ export class MissionPanel {
       }
       targetMission.modules.generation = {
         jobId: result.job.job_id,
+        flightLogDocId,
         outcome: result.job.outcome || 'done',
         elapsedS: result.job.elapsed_s ?? null,
+        flightMode: activeMode,
+        launchWindowMarginMs:
+          activeMode === 'launch_window'
+            ? genPayload.advanced?.launchWindowMarginMs ?? null
+            : null,
+        launchWindowRefine:
+          activeMode === 'launch_window'
+            ? Boolean(genPayload.advanced?.launchWindowRefine)
+            : null,
+        deltaV: summarySection?.delta_v || null,
+        economy: summarySection?.economy || null,
+        launchWindow: summarySection?.launch_window || null,
         request: result.request,
         payload: genPayload,
-        summaryStatus: result.summary?.summary?.status || null,
+        summaryStatus: summarySection?.status || null,
         generatedAt: new Date().toISOString(),
       };
+      this._solverUiMissionId = targetMission.id;
+      this._solverUiMode = activeMode;
 
       this._isRecalculatingTraj = false;
       this._recalcTrajAbort = null;
       this._recalcTrajStatus = '';
       this._recalcTrajError = '';
-      this._trajStatusMsg = `Trajectory recalculated (${result.job.job_id}).`;
+      this._trajStatusMsg =
+        activeMode === 'launch_window'
+          ? `Launch window ready (${result.job.job_id}).`
+          : activeMode === 'economy'
+            ? `Economy search ready (${result.job.job_id}).`
+            : `Trajectory recalculated (${result.job.job_id}).`;
       this._trajErrorMsg = '';
       this._touchMission(targetMission);
       this._persistState();
@@ -1945,11 +2221,22 @@ export class MissionPanel {
         targetMission.id === this.activeMissionId &&
         typeof this.onLoadMissionTrajectory === 'function'
       ) {
-        await this.onLoadMissionTrajectory(targetMission, {
-          jsonDoc: result.trajectory,
-          syncFromMeta: true,
-          overwriteSiteIfUnset: false,
-          forceReload: true,
+        if (result.trajectory) {
+          await this.onLoadMissionTrajectory(targetMission, {
+            jsonDoc: result.trajectory,
+            syncFromMeta: true,
+            overwriteSiteIfUnset: false,
+            forceReload: true,
+          });
+        } else {
+          await this.onLoadMissionTrajectory(targetMission);
+        }
+      }
+      if (result.log && typeof result.log === 'object') {
+        this.onFlightLogGenerated?.({
+          mission: targetMission,
+          flightLog: result.log,
+          filename: result.log.files?.flight_log || `flight-${result.job.job_id}.json`,
         });
       }
     } catch (err) {
@@ -2437,6 +2724,13 @@ export class MissionPanel {
 
             <div class="mission-card-foot">
               <span class="mission-foot-chip">SURFACE ${m.points.length + m.measurements.length} (${m.points.length} PT · ${m.measurements.length} RTE)</span>
+              ${
+                resolveMissionFlightMode(m) === 'economy'
+                  ? `<span class="mission-foot-chip eco">ECO</span>`
+                  : resolveMissionFlightMode(m) === 'launch_window'
+                    ? `<span class="mission-foot-chip win">WIN</span>`
+                    : ''
+              }
               <button type="button" class="mission-foot-link" data-m-action="duplicate-mission" data-mission-id="${esc(m.id)}">CLONE</button>
             </div>
           </div>
@@ -2535,7 +2829,11 @@ export class MissionPanel {
         </div>
 
         <div class="mission-field-group">
-          <span class="mission-field-label">LANDING DATE (UTC)</span>
+          <span class="mission-field-label">${
+            draft.flightMode === 'launch_window' || draft.dateMode !== 'launch'
+              ? 'LANDING DATE (UTC)'
+              : 'LAUNCH DATE (UTC)'
+          }</span>
           <input
             type="datetime-local"
             class="hud-input mission-datetime-input"
@@ -2578,6 +2876,50 @@ export class MissionPanel {
           ${this._renderPickMoonButtonHtml('new-mission', busyAttr)}
         </div>
 
+        <div class="mission-field-group">
+          <span class="mission-field-label">FLIGHT MODE</span>
+          <input type="hidden" data-field="new-mission-flight-mode" value="${esc(draft.flightMode || 'fast')}" />
+          <div class="mission-mode-pills">
+            <button type="button" class="mission-mode-pill ${(draft.flightMode || 'fast') === 'fast' ? 'active' : ''}" data-m-action="set-draft-flight-mode" data-flight-mode="fast" ${busyAttr}>FAST</button>
+            <button type="button" class="mission-mode-pill ${draft.flightMode === 'economy' ? 'active eco' : ''}" data-m-action="set-draft-flight-mode" data-flight-mode="economy" ${busyAttr}>ECONOMY</button>
+            <button type="button" class="mission-mode-pill ${draft.flightMode === 'launch_window' ? 'active win' : ''}" data-m-action="set-draft-flight-mode" data-flight-mode="launch_window" ${busyAttr}>WINDOW</button>
+          </div>
+          <div class="mission-mode-hint">${
+            draft.flightMode === 'economy'
+              ? 'Economy: searches ±3 days for lowest total mission Δv (TLI + LOI + descent).'
+              : draft.flightMode === 'launch_window'
+                ? 'Launch Window: finds all launch times landing on the target UTC day within Δv margin.'
+                : 'Fast: best transfer within the requested UTC day.'
+          }</div>
+        </div>
+
+        ${
+          draft.flightMode === 'launch_window'
+            ? `
+          <div class="mission-window-opts">
+            <div class="mission-field-group">
+              <span class="mission-field-label">WINDOW ΔV MARGIN (M/S)</span>
+              <input
+                type="number"
+                step="1"
+                min="0"
+                max="5000"
+                class="hud-input"
+                data-field="new-mission-window-margin"
+                placeholder="50"
+                value="${esc(draft.launchWindowMarginMs ?? '50')}"
+                ${busyAttr}
+              />
+            </div>
+            <label class="mission-check-row">
+              <input type="checkbox" data-field="new-mission-window-refine" ${draft.launchWindowRefine !== false ? 'checked' : ''} ${busyAttr} />
+              <span>Refine optimum launch for 3D orbit path</span>
+            </label>
+          </div>
+        `
+            : ''
+        }
+
         <div class="mission-advanced-box">
           <button
             type="button"
@@ -2606,9 +2948,9 @@ export class MissionPanel {
               </div>
               <div class="mission-field-group">
                 <span class="mission-field-label">DATE MODE</span>
-                <select class="hud-input mission-select" data-field="new-mission-date-mode" ${busyAttr}>
-                  <option value="arrival" ${draft.dateMode !== 'launch' ? 'selected' : ''}>Landing Day (UTC)</option>
-                  <option value="launch" ${draft.dateMode === 'launch' ? 'selected' : ''}>Launch Day (UTC)</option>
+                <select class="hud-input mission-select" data-field="new-mission-date-mode" ${draft.flightMode === 'launch_window' ? 'disabled title="Launch Window search requires Landing Day (UTC)"' : ''} ${busyAttr}>
+                  <option value="arrival" ${draft.flightMode === 'launch_window' || draft.dateMode !== 'launch' ? 'selected' : ''}>Landing Day (UTC)</option>
+                  <option value="launch" ${draft.flightMode !== 'launch_window' && draft.dateMode === 'launch' ? 'selected' : ''}>Launch Day (UTC)</option>
                 </select>
               </div>
             </div>
@@ -2803,6 +3145,275 @@ export class MissionPanel {
       <div class="mission-scroll-area" data-field="missions-list">
         ${this._renderMissionCardsHtml()}
       </div>
+      </div>
+    `;
+  }
+
+  _solverUtcToIso(rawUtc) {
+    if (!rawUtc || typeof rawUtc !== 'string') return null;
+    const ms = parseUtcStringToMs(rawUtc);
+    return ms !== null ? new Date(ms).toISOString() : null;
+  }
+
+  _formatSolverUtc(rawUtc) {
+    const iso = this._solverUtcToIso(rawUtc);
+    return iso ? formatUtcCompact(iso) : String(rawUtc || '—');
+  }
+
+  _syncSolverUiToMission(mission) {
+    if (!mission || this._solverUiMissionId === mission.id) return;
+    this._solverUiMissionId = mission.id;
+    this._solverUiMode = resolveMissionFlightMode(mission);
+    const gen = mission.modules?.generation;
+    const margin =
+      gen?.launchWindowMarginMs ??
+      gen?.payload?.advanced?.launchWindowMarginMs ??
+      gen?.request?.launch_window_margin_m_s ??
+      50;
+    this._solverUiMarginMs = Number.isFinite(Number(margin)) ? String(margin) : '50';
+    this._solverUiRefine =
+      gen?.launchWindowRefine ?? gen?.payload?.advanced?.launchWindowRefine ?? true;
+    this._solverUiShowAllDays = false;
+  }
+
+  _renderSolverModeBlockHtml(mission, sectionKey = 'flight-solver') {
+    const esc = MissionPanel.escapeHtml;
+    this._syncSolverUiToMission(mission);
+
+    const gen = mission.modules?.generation || null;
+    const savedMode = resolveMissionFlightMode(mission);
+    const uiMode = this._solverUiMode || savedMode;
+    const isCollapsed = this._collapsedSections.has(sectionKey);
+    const isRecalcForThis = this._isRecalculatingTraj && this._recalcTrajMissionId === mission.id;
+    const recalcErrForThis =
+      !isRecalcForThis && this._recalcTrajMissionId === mission.id ? this._recalcTrajError : '';
+    const hasTarget = Boolean(mission.landingSite);
+
+    const chipClass =
+      savedMode === 'economy' ? 'nominal' : savedMode === 'launch_window' ? 'warn' : 'accent';
+    const chipLabel =
+      savedMode === 'economy'
+        ? 'ECONOMY'
+        : savedMode === 'launch_window'
+          ? 'LAUNCH WINDOW'
+          : 'FAST';
+
+    const runBtnLabel =
+      uiMode === 'launch_window'
+        ? 'SEARCH LAUNCH WINDOW'
+        : uiMode === 'economy'
+          ? 'RUN ECONOMY (±3D)'
+          : 'RECALCULATE (FAST)';
+
+    const dv = gen?.deltaV || null;
+    const eco = gen?.economy || null;
+    const lw = gen?.launchWindow || null;
+
+    let ecoHtml = '';
+    if (eco) {
+      const shift = Number(eco.chosen_shift_days || 0);
+      const shiftText = shift === 0 ? '0 d (requested)' : `${shift > 0 ? '+' : ''}${shift} d`;
+      const savingVal = Number(eco.saving_vs_requested_m_s);
+      const savingText = Number.isFinite(savingVal)
+        ? savingVal > 0.05
+          ? `−${savingVal.toFixed(1)} m/s`
+          : '0.0 m/s (optimal)'
+        : '—';
+      const days = Array.isArray(eco.days) ? eco.days : [];
+      const rowsHtml = days
+        .map((d) => {
+          const s = Number(d.shift_days || 0);
+          const isChosen = d.shift_days === eco.chosen_shift_days;
+          const isFeasible = d.launch_utc && Number.isFinite(Number(d.mission_delta_v_m_s));
+          const dayStr = d.day?.day_start_utc ? String(d.day.day_start_utc).slice(5, 10) : '—';
+          const tofStr = Number.isFinite(Number(d.time_of_flight_h))
+            ? `${Number(d.time_of_flight_h).toFixed(1)}h`
+            : '—';
+          const dvOrReason = isFeasible
+            ? `${Math.round(Number(d.mission_delta_v_m_s))} m/s`
+            : esc(d.reason || 'no flight');
+          return `
+            <tr class="${isChosen ? 'is-chosen' : !isFeasible ? 'is-infeasible' : ''}">
+              <td>${s > 0 ? `+${s}d` : `${s}d`}</td>
+              <td>${esc(dayStr)}</td>
+              <td>${esc(tofStr)}</td>
+              <td>${dvOrReason}</td>
+            </tr>
+          `;
+        })
+        .join('');
+
+      ecoHtml = `
+        <div class="mission-solver-summary">
+          <div class="mission-solver-kpis">
+            <div class="mission-kv">
+              <span class="mission-kv-k">CHOSEN SHIFT</span>
+              <span class="mission-kv-v val-nominal">${esc(shiftText)}</span>
+            </div>
+            <div class="mission-kv">
+              <span class="mission-kv-k">ΔV SAVED</span>
+              <span class="mission-kv-v val-nominal">${esc(savingText)}</span>
+            </div>
+            <div class="mission-kv">
+              <span class="mission-kv-k">CHOSEN MISSION ΔV</span>
+              <span class="mission-kv-v">${Number.isFinite(Number(eco.chosen_mission_delta_v_m_s)) ? `${Math.round(Number(eco.chosen_mission_delta_v_m_s))} m/s` : '—'}</span>
+            </div>
+            <div class="mission-kv">
+              <span class="mission-kv-k">REQUESTED DAY ΔV</span>
+              <span class="mission-kv-v">${Number.isFinite(Number(eco.requested_mission_delta_v_m_s)) ? `${Math.round(Number(eco.requested_mission_delta_v_m_s))} m/s` : 'N/A'}</span>
+            </div>
+          </div>
+          ${
+            days.length > 0
+              ? `
+            <div class="mission-btn-strip">
+              <button type="button" class="mission-mini-btn" data-m-action="toggle-economy-days">${this._solverUiShowAllDays ? 'HIDE ±3D TABLE' : `SHOW ±${eco.date_shift_days ?? 3}D TABLE (${days.length})`}</button>
+            </div>
+            ${
+              this._solverUiShowAllDays
+                ? `<div class="mission-eco-table-wrap">
+                    <table class="mission-eco-table">
+                      <thead><tr><th>SHIFT</th><th>DAY</th><th>TOF</th><th>MISSION ΔV</th></tr></thead>
+                      <tbody>${rowsHtml}</tbody>
+                    </table>
+                  </div>`
+                : ''
+            }
+          `
+              : ''
+          }
+        </div>
+      `;
+    }
+
+    let lwHtml = '';
+    if (lw) {
+      const segments = Array.isArray(lw.segments) ? lw.segments : [];
+      const segsHtml = segments
+        .map(
+          (seg, idx) => `
+          <div class="mission-lw-seg">
+            <div class="mission-lw-seg-top">
+              <span>#${idx + 1} · ${esc(this._formatSolverUtc(seg.opens_utc))} → ${esc(String(this._formatSolverUtc(seg.closes_utc)).slice(11))}</span>
+              <span class="val-warn">${Number.isFinite(Number(seg.duration_min)) ? `${Number(seg.duration_min).toFixed(1)} min` : '—'}</span>
+            </div>
+            <div class="mission-lw-seg-sub">
+              Best: ${esc(this._formatSolverUtc(seg.best?.launch_utc))} · ${Number.isFinite(Number(seg.best?.mission_delta_v_m_s)) ? `${Math.round(Number(seg.best.mission_delta_v_m_s))} m/s` : '—'} (max ${Number.isFinite(Number(seg.max_mission_delta_v_m_s)) ? `${Math.round(Number(seg.max_mission_delta_v_m_s))}` : '—'})
+            </div>
+          </div>
+        `
+        )
+        .join('');
+
+      lwHtml = `
+        <div class="mission-solver-summary">
+          <div class="mission-solver-kpis">
+            <div class="mission-kv">
+              <span class="mission-kv-k">WINDOW OPENS (UTC)</span>
+              <span class="mission-kv-v val-warn">${esc(this._formatSolverUtc(lw.opens_utc))}</span>
+            </div>
+            <div class="mission-kv">
+              <span class="mission-kv-k">WINDOW CLOSES (UTC)</span>
+              <span class="mission-kv-v val-warn">${esc(this._formatSolverUtc(lw.closes_utc))}</span>
+            </div>
+            <div class="mission-kv">
+              <span class="mission-kv-k">SPAN / OPEN TOTAL</span>
+              <span class="mission-kv-v">${Number.isFinite(Number(lw.span_h)) ? `${Number(lw.span_h).toFixed(1)} h` : '—'} · ${Number.isFinite(Number(lw.open_total_min)) ? `${Number(lw.open_total_min).toFixed(1)} min` : '—'}</span>
+            </div>
+            <div class="mission-kv">
+              <span class="mission-kv-k">MIN ΔV (+${Number.isFinite(Number(lw.margin_m_s)) ? Math.round(Number(lw.margin_m_s)) : 50} M/S)</span>
+              <span class="mission-kv-v val-nominal">${Number.isFinite(Number(lw.min_mission_delta_v_m_s)) ? `${Math.round(Number(lw.min_mission_delta_v_m_s))} m/s` : '—'}</span>
+            </div>
+          </div>
+          ${
+            lw.optimum
+              ? `
+            <div class="mission-traj-compact">
+              <div class="data-row"><span>Optimum Launch:</span> <span class="data-val val-accent">${esc(this._formatSolverUtc(lw.optimum.launch_utc))}</span></div>
+              <div class="data-row"><span>Optimum Touchdown:</span> <span class="data-val val-nominal">${esc(this._formatSolverUtc(lw.optimum.touchdown_utc || lw.optimum.lunar_orbit_insertion_utc))}</span></div>
+            </div>
+            <div class="mission-btn-strip">
+              <button type="button" class="mission-mini-btn nominal" data-m-action="sync-window-optimum">SYNC OPTIMUM DATES</button>
+            </div>
+          `
+              : ''
+          }
+          ${
+            segments.length > 0
+              ? `<div class="mission-field-label">WINDOW INTERVALS (${segments.length})</div><div class="mission-lw-segments">${segsHtml}</div>`
+              : ''
+          }
+        </div>
+      `;
+    }
+
+    return `
+      <div class="mission-card-block ${isCollapsed ? 'is-collapsed' : ''}">
+        <div class="mission-block-header">
+          <span class="mission-block-title">SOLVER MODE &amp; LAUNCH WINDOW</span>
+          <div class="mission-block-actions">
+            <span class="mission-source-chip ${chipClass}">${chipLabel}</span>
+            ${this._sectionArrowHtml(sectionKey, 'Collapse / Expand Solver Mode')}
+          </div>
+        </div>
+        <div class="mission-block-body ${isCollapsed ? 'collapsed' : ''}" style="${isCollapsed ? '' : 'display:flex;flex-direction:column;gap:7px;'}">
+          <div class="mission-mode-pills">
+            <button type="button" class="mission-mode-pill ${uiMode === 'fast' ? 'active' : ''}" data-m-action="set-active-solver-mode" data-flight-mode="fast" ${isRecalcForThis ? 'disabled' : ''}>FAST</button>
+            <button type="button" class="mission-mode-pill ${uiMode === 'economy' ? 'active eco' : ''}" data-m-action="set-active-solver-mode" data-flight-mode="economy" ${isRecalcForThis ? 'disabled' : ''}>ECONOMY</button>
+            <button type="button" class="mission-mode-pill ${uiMode === 'launch_window' ? 'active win' : ''}" data-m-action="set-active-solver-mode" data-flight-mode="launch_window" ${isRecalcForThis ? 'disabled' : ''}>WINDOW</button>
+          </div>
+          <div class="mission-mode-hint">${
+            uiMode === 'economy'
+              ? 'Searches ±3 days around target date for minimum mission Δv (TLI + LOI + descent).'
+              : uiMode === 'launch_window'
+                ? 'Scans every valid launch slot for the current Landing Day (UTC) within Δv margin.'
+                : 'Fast search on the requested UTC day.'
+          }</div>
+          ${
+            uiMode === 'launch_window'
+              ? `
+            <div class="mission-window-opts">
+              <div class="mission-field-group">
+                <span class="mission-field-label">WINDOW ΔV MARGIN (M/S)</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="5000"
+                  class="hud-input"
+                  data-field="solver-window-margin"
+                  placeholder="50"
+                  value="${esc(this._solverUiMarginMs ?? '50')}"
+                  ${isRecalcForThis ? 'disabled' : ''}
+                />
+              </div>
+              <label class="mission-check-row">
+                <input type="checkbox" data-field="solver-window-refine" ${this._solverUiRefine ? 'checked' : ''} ${isRecalcForThis ? 'disabled' : ''} />
+                <span>Refine optimum launch for 3D orbit path</span>
+              </label>
+            </div>
+          `
+              : ''
+          }
+          <div class="mission-btn-strip">
+            <button type="button" class="mission-mini-btn accent" data-m-action="recalc-mission-mode" ${!hasTarget || isRecalcForThis ? 'disabled' : ''} title="${hasTarget ? 'Run trajectory solver in selected mode' : 'Set landing target coordinates first'}">${runBtnLabel}</button>
+            ${isRecalcForThis ? `<button type="button" class="mission-mini-btn danger" data-m-action="cancel-recalc-traj">CANCEL</button>` : ''}
+          </div>
+          ${isRecalcForThis ? `<div class="mission-gen-status" data-field="recalc-traj-status">${esc(this._recalcTrajStatus || 'Running solver...')}</div>` : ''}
+          ${recalcErrForThis ? `<div class="mission-form-error visible">${esc(recalcErrForThis)}</div>` : ''}
+          ${
+            dv && Number.isFinite(Number(dv.mission_total_m_s))
+              ? `
+            <div class="mission-traj-compact">
+              <div class="data-row"><span>Mission Total ΔV:</span> <span class="data-val val-warn">${Math.round(Number(dv.mission_total_m_s))} m/s</span></div>
+              <div class="data-row"><span>TLI / LOI / Descent:</span> <span class="data-val">${Math.round(Number(dv.tli_m_s || 0))} / ${Math.round(Number(dv.lunar_orbit_insertion_m_s || 0))} / ${dv.descent_m_s != null ? Math.round(Number(dv.descent_m_s)) : '—'} m/s</span></div>
+            </div>
+          `
+              : ''
+          }
+          ${ecoHtml}
+          ${lwHtml}
+        </div>
       </div>
     `;
   }
@@ -3006,6 +3617,8 @@ export class MissionPanel {
         </div>
       </div>
 
+      ${this._renderSolverModeBlockHtml(mission, 'flight-solver')}
+
       <!-- 3. TRAJECTORY SUMMARY LINK -->
       <div class="mission-card-block ${isTrajCardCollapsed ? 'is-collapsed' : ''}">
         <div class="mission-block-header">
@@ -3031,6 +3644,7 @@ export class MissionPanel {
           <button type="button" class="mission-mini-btn" data-m-action="upload-traj-json">LOAD JSON</button>
           <button type="button" class="mission-mini-btn accent" data-m-action="switch-subtab" data-subtab="traj">MANAGE TRAJ</button>
           ${hasTraj ? `<button type="button" class="mission-mini-btn" data-m-action="open-cislunar">CISLUNAR</button>` : ''}
+          <button type="button" class="mission-mini-btn" data-m-action="open-dashboard" title="Open LWP Mission Analytics Datatable">DASHBOARD</button>
         </div>
         </div>
       </div>
@@ -3121,6 +3735,7 @@ export class MissionPanel {
             <span class="mission-block-title">FLIGHT PROFILE TELEMETRY</span>
             <div class="mission-block-actions">
               <button type="button" class="mission-mini-btn" data-m-action="open-cislunar">CISLUNAR VIEW</button>
+              <button type="button" class="mission-mini-btn accent" data-m-action="open-dashboard" title="Open LWP Mission Analytics Datatable">DATATABLE</button>
               ${this._sectionArrowHtml('traj-telemetry', 'Collapse / Expand Telemetry Profile')}
             </div>
           </div>
@@ -3164,6 +3779,8 @@ export class MissionPanel {
         </div>
       `
       }
+
+      ${this._renderSolverModeBlockHtml(mission, 'traj-solver')}
     `;
   }
 

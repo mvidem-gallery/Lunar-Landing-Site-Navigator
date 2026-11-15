@@ -92,6 +92,7 @@ export class UIController {
     this.railRulerBtn = document.getElementById('rail-ruler-btn');
     this.rightRulerBtn = document.getElementById('ruler-toggle-btn');
     this.simpleTrajectoryBtn = document.getElementById('simple-trajectory-btn');
+    this.railDashboardBtn = document.getElementById('rail-dashboard-btn');
 
     // Телеметрія (права панель + нижня стрічка)
     this.cameraStatus = document.getElementById('camera-status');
@@ -131,6 +132,7 @@ export class UIController {
     this.searchProvider = null;
     this.topMissionClickCallback = null;
     this.leftTabChangeCallback = null;
+    this.dashboardClickCallback = null;
 
     this.trajectoryToggleCallback = null;
     this.trajectoryFileLoadCallback = null;
@@ -183,6 +185,10 @@ export class UIController {
 
     this.reportCloseBtn?.addEventListener('click', () => {
       this.closeReportPanel();
+    });
+
+    this.railDashboardBtn?.addEventListener('click', () => {
+      this.dashboardClickCallback?.();
     });
 
     if (this.leftCollapseBtn) {
@@ -539,6 +545,10 @@ export class UIController {
     this.rightRulerBtn?.classList.toggle('active', isActive);
   }
 
+  setDashboardActiveUI(isOpen) {
+    this.railDashboardBtn?.classList.toggle('active', Boolean(isOpen));
+  }
+
   setViewModeUI(mode) {
     const activeMode =
       mode === VIEW_MODES.CISLUNAR || mode === 'CISLUNAR_VIEW'
@@ -722,6 +732,10 @@ export class UIController {
 
   onTopMissionClick(callback) {
     this.topMissionClickCallback = callback;
+  }
+
+  onDashboardClick(callback) {
+    this.dashboardClickCallback = callback;
   }
 
   setLoading(isLoading) {

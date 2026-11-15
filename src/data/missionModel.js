@@ -460,28 +460,65 @@ export function createDefaultMissions() {
 }
 
 /**
- * Builds a `/api/trajectory/jobs` generation payload for recalculating a mission's
- * trajectory after its landing target changes, preserving the user's previously
- * configured parameters (date mode, launch/landing date, vehicle, spaceport,
- * transfer type, landing window constraints, terrain/cache flags).
+ * Resolves the solver flight mode ('fast' | 'economy' | 'launch_window') stored on a mission.
  */
-export function buildTrajectoryRecalcPayload(mission, { fallbackDateIso = null } = {}) {
+export function resolveMissionFlightMode(mission) {
+  const gen = mission?.modules?.generation;
+  const savedMode =
+    gen?.flightMode ??
+    gen?.payload?.advanced?.flightMode ??
+    gen?.payload?.flightMode ??
+    null;
+  if (savedMode === 'fast' || savedMode === 'economy' || savedMode === 'launch_window') {
+    return savedMode;
+  }
+  if (gen?.launchWindow || gen?.request?.launch_window) {
+    return 'launch_window';
+  }
+  if (gen?.economy || gen?.request?.mode === 'economy') {
+    return 'economy';
+  }
+  return 'fast';
+}
+
+/**
+ * Builds a `/api/trajectory/jobs` generation payload for recalculating a mission's
+ * trajectory after its landing target or flight mode changes, preserving the user's
+ * previously configured parameters (date mode, launch/landing date, flight mode,
+ * launch window margin, vehicle, spaceport, transfer type, landing window constraints,
+ * terrain/cache flags).
+ */
+export function buildTrajectoryRecalcPayload(
+  mission,
+  {
+    fallbackDateIso = null,
+    flightMode = null,
+    launchWindowMarginMs = undefined,
+    launchWindowRefine = undefined,
+  } = {}
+) {
   const site = normalizeLandingSite(mission?.landingSite);
   if (!site) return null;
 
+  const gen = mission?.modules?.generation;
   const savedPayload =
-    mission?.modules?.generation?.payload &&
-    typeof mission.modules.generation.payload === 'object'
-      ? mission.modules.generation.payload
-      : null;
+    gen?.payload && typeof gen.payload === 'object' ? gen.payload : null;
   const savedReq =
-    mission?.modules?.generation?.request &&
-    typeof mission.modules.generation.request === 'object'
-      ? mission.modules.generation.request
-      : null;
+    gen?.request && typeof gen.request === 'object' ? gen.request : null;
+  const adv =
+    savedPayload?.advanced && typeof savedPayload.advanced === 'object'
+      ? savedPayload.advanced
+      : {};
+
+  const resolvedFlightMode =
+    flightMode === 'fast' || flightMode === 'economy' || flightMode === 'launch_window'
+      ? flightMode
+      : resolveMissionFlightMode(mission);
 
   let dateMode = 'arrival';
-  if (savedPayload?.dateMode === 'launch' || savedPayload?.dateMode === 'arrival') {
+  if (resolvedFlightMode === 'launch_window') {
+    dateMode = 'arrival';
+  } else if (savedPayload?.dateMode === 'launch' || savedPayload?.dateMode === 'arrival') {
     dateMode = savedPayload.dateMode;
   } else if (savedReq?.launch_date && !savedReq?.arrival_date) {
     dateMode = 'launch';
@@ -515,11 +552,6 @@ export function buildTrajectoryRecalcPayload(mission, { fallbackDateIso = null }
       null;
   }
 
-  const adv =
-    savedPayload?.advanced && typeof savedPayload.advanced === 'object'
-      ? savedPayload.advanced
-      : {};
-
   const trajectory =
     (adv.trajectory ?? savedReq?.trajectory) === 'hohmann' ? 'hohmann' : 'direct';
   const spaceport = adv.spaceport ?? savedReq?.spaceport ?? null;
@@ -550,6 +582,19 @@ export function buildTrajectoryRecalcPayload(mission, { fallbackDateIso = null }
   const noCache =
     adv.noCache !== undefined ? Boolean(adv.noCache) : Boolean(savedReq?.no_cache);
 
+  const savedMargin =
+    adv.launchWindowMarginMs ??
+    gen?.launchWindowMarginMs ??
+    savedReq?.launch_window_margin_m_s ??
+    null;
+  const resolvedMargin =
+    launchWindowMarginMs !== undefined ? launchWindowMarginMs : savedMargin;
+
+  const savedLwRefine =
+    adv.launchWindowRefine ?? gen?.launchWindowRefine ?? true;
+  const resolvedLwRefine =
+    launchWindowRefine !== undefined ? Boolean(launchWindowRefine) : Boolean(savedLwRefine);
+
   return {
     dateMode,
     ...(inputDateIso
@@ -560,6 +605,17 @@ export function buildTrajectoryRecalcPayload(mission, { fallbackDateIso = null }
     landingSite: { lat: site.lat, lon: site.lon },
     advanced: {
       trajectory,
+      flightMode: resolvedFlightMode,
+      ...(resolvedFlightMode === 'launch_window' &&
+      resolvedMargin !== null &&
+      resolvedMargin !== undefined &&
+      resolvedMargin !== '' &&
+      Number.isFinite(Number(resolvedMargin))
+        ? { launchWindowMarginMs: Number(resolvedMargin) }
+        : {}),
+      ...(resolvedFlightMode === 'launch_window'
+        ? { launchWindowRefine: resolvedLwRefine }
+        : {}),
       spaceport: spaceport || null,
       rocket: rocket || null,
       spacecraft: spacecraft || null,

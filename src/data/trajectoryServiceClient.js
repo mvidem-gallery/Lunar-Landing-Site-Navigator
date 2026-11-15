@@ -95,8 +95,21 @@ export async function fetchTrajectoryJobResult(jobId, part = 'all', { signal = n
  */
 export async function generateMissionTrajectory(
   payload,
-  { intervalMs = 600, timeoutMs = 180000, onProgress = null, signal = null } = {}
+  { intervalMs = 600, timeoutMs = null, onProgress = null, signal = null } = {}
 ) {
+  const requestedFlightMode = payload?.advanced?.flightMode ?? payload?.flightMode ?? null;
+  const isLongSearch =
+    requestedFlightMode === 'economy' ||
+    requestedFlightMode === 'launch_window' ||
+    payload?.mode === 'economy' ||
+    Boolean(payload?.launch_window ?? payload?.advanced?.launch_window);
+  const effectiveTimeoutMs =
+    Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : isLongSearch
+        ? 300000
+        : 180000;
+
   onProgress?.({ stage: 'submitting', message: 'Submitting request to trajectory solver...' });
   const submitRes = await submitTrajectoryJob(payload, { signal });
   let job = submitRes.job;
@@ -112,9 +125,9 @@ export async function generateMissionTrajectory(
 
   const startedAt = Date.now();
   while (job.status === 'queued' || job.status === 'running') {
-    if (Date.now() - startedAt > timeoutMs) {
+    if (Date.now() - startedAt > effectiveTimeoutMs) {
       throw buildApiError(
-        `Trajectory calculation timed out after ${Math.round(timeoutMs / 1000)}s.`,
+        `Trajectory calculation timed out after ${Math.round(effectiveTimeoutMs / 1000)}s.`,
         'timeout',
         504
       );
@@ -127,7 +140,9 @@ export async function generateMissionTrajectory(
       job,
       message:
         job.status === 'running'
-          ? `Computing trajectory (${job.job_id})...`
+          ? isLongSearch
+            ? `Computing ${requestedFlightMode === 'economy' ? 'economy (±3d)' : 'launch window'} (${job.job_id})...`
+            : `Computing trajectory (${job.job_id})...`
           : `Job ${job.job_id}: ${job.status}...`,
     });
   }
@@ -152,18 +167,25 @@ export async function generateMissionTrajectory(
     (t) => t && t.source !== 'none' && Array.isArray(t.samples) && t.samples.length >= 2
   );
 
+  const summaryBody = summary?.summary || null;
+  const hasLaunchWindowSolution = Boolean(
+    summaryBody?.launch_window &&
+      summaryBody?.status &&
+      summaryBody.status !== 'no flight found'
+  );
+
   const isValidTraj =
     trajectory &&
     typeof trajectory === 'object' &&
     entries.length > 0 &&
     hasNumericalEntry;
 
-  if (!isValidTraj) {
+  if (!isValidTraj && !hasLaunchWindowSolution) {
     const terrainVerdict = summary?.landing_site?.terrain_check?.reason;
     const rawReason =
-      summary?.summary?.reason ||
+      summaryBody?.reason ||
       (terrainVerdict ? `landing site unsuitable: ${terrainVerdict}` : null) ||
-      summary?.summary?.status ||
+      summaryBody?.status ||
       job.outcome ||
       'No feasible trajectory produced for these parameters.';
     throw buildApiError(String(rawReason), 'no_trajectory', 422, { summary, job });
@@ -173,7 +195,8 @@ export async function generateMissionTrajectory(
     job,
     request: submitRes.request || null,
     summary,
-    trajectory,
+    trajectory: isValidTraj ? trajectory : null,
+    hasTrajectoryPath: isValidTraj,
     log,
   };
 }
@@ -187,16 +210,21 @@ export function extractScheduleFromGeneratedResult(result) {
     entries[0] ||
     null;
   const summarySection = result?.summary?.summary || null;
+  const lwOpt = summarySection?.launch_window?.optimum || null;
   const firstSample = firstTraj?.samples?.[0] || null;
   const lastSample = firstTraj?.samples?.[firstTraj.samples.length - 1] || null;
 
   const launchMs =
     parseUtcStringToMs(firstSample?.t) ??
     parseUtcStringToMs(summarySection?.launch_utc) ??
+    parseUtcStringToMs(lwOpt?.launch_utc) ??
     null;
   const touchdownMs =
     parseUtcStringToMs(lastSample?.t) ??
     parseUtcStringToMs(summarySection?.touchdown_utc) ??
+    parseUtcStringToMs(lwOpt?.touchdown_utc) ??
+    parseUtcStringToMs(summarySection?.lunar_orbit_insertion_utc) ??
+    parseUtcStringToMs(lwOpt?.lunar_orbit_insertion_utc) ??
     null;
 
   let durationSec = Number.isFinite(Number(lastSample?.t_s))
@@ -204,6 +232,9 @@ export function extractScheduleFromGeneratedResult(result) {
     : null;
   if (durationSec === null && launchMs !== null && touchdownMs !== null && touchdownMs >= launchMs) {
     durationSec = Math.round((touchdownMs - launchMs) / 1000);
+  }
+  if (durationSec === null && Number.isFinite(Number(lwOpt?.time_of_flight_h))) {
+    durationSec = Math.round(Number(lwOpt.time_of_flight_h) * 3600);
   }
 
   const landingSiteObj = result?.trajectory?.landing_site || null;

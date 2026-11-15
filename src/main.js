@@ -17,6 +17,8 @@ import { MissionPanel } from './interaction/missionPanel.js';
 import { TimelineController } from './interaction/timelineController.js';
 import { AIReportPanel } from './interaction/aiReportPanel.js';
 import { LunarHorizonModal } from './lunar-horizon/lunarHorizonModal.js';
+import { DashboardModal } from './datatable/dashboardModal.js';
+import { fetchTrajectoryJobResult } from './data/trajectoryServiceClient.js';
 import { loadTrajectoryDoc } from './data/trajectoryStorage.js';
 import { MAP_LAYERS, TRAJECTORY_CONFIG, VIEW_MODES } from './config/constants.js';
 
@@ -290,10 +292,86 @@ async function bootstrap() {
       });
     });
 
+    const dashboardModal = new DashboardModal();
+    const fetchedFlightLogCache = new Map();
+    dashboardModal.onOpen(() => {
+      uiController.setDashboardActiveUI(true);
+    });
+    dashboardModal.onClose(() => {
+      uiController.setDashboardActiveUI(false);
+    });
+
     let missionPanel = null;
     let aiReportPanel = null;
     let missionTrajectoryLoadSeq = 0;
     let currentLoadedTrajectoryKey = null;
+
+    async function resolveMissionFlightLog(mission) {
+      const gen = mission?.modules?.generation;
+      if (!gen) return null;
+      if (gen.flightLogDocId) {
+        const doc = await loadTrajectoryDoc(gen.flightLogDocId);
+        if (doc && typeof doc === 'object') {
+          return {
+            filename: doc.files?.flight_log || (gen.jobId ? `flight-${gen.jobId}.json` : `flight-${mission.id}.json`),
+            payload: doc,
+          };
+        }
+      }
+      if (gen.jobId) {
+        if (fetchedFlightLogCache.has(gen.jobId)) {
+          return fetchedFlightLogCache.get(gen.jobId);
+        }
+        try {
+          const res = await fetchTrajectoryJobResult(gen.jobId, 'log');
+          const logDoc = res?.data?.log;
+          if (logDoc && typeof logDoc === 'object') {
+            const entry = {
+              filename: logDoc.files?.flight_log || `flight-${gen.jobId}.json`,
+              payload: logDoc,
+            };
+            fetchedFlightLogCache.set(gen.jobId, entry);
+            return entry;
+          }
+        } catch {
+          // Ignore missing/expired backend job logs; Datatable IndexedDB retains previously synced logs
+        }
+      }
+      return null;
+    }
+
+    async function openMissionDashboard(focusMission = null) {
+      const targetMission = focusMission || missionPanel?.getActiveMission() || null;
+      const allMissions = missionPanel?.getAllMissions?.() || [];
+      const ordered = [
+        ...allMissions.filter((m) => !targetMission || m.id !== targetMission.id),
+        ...(targetMission ? [targetMission] : []),
+      ];
+
+      dashboardModal.open({
+        mission: targetMission,
+        metaText: ordered.length > 0 ? `Syncing ${ordered.length} mission(s)...` : 'LWP Mission Analytics',
+      });
+
+      const resolved = await Promise.all(ordered.map((m) => resolveMissionFlightLog(m)));
+      const flightLogs = resolved.filter(Boolean);
+      if (dashboardModal.isOpen) {
+        if (flightLogs.length > 0) {
+          dashboardModal.ingestFlightLogs(flightLogs);
+          dashboardModal.setStatusMeta(
+            targetMission?.name || 'Mission Comparison & Logs',
+            `${flightLogs.length} flight log(s) synced`
+          );
+        } else {
+          dashboardModal.setStatusMeta(
+            targetMission?.name || 'Mission Comparison & Logs',
+            targetMission?.modules?.generation?.jobId
+              ? `Job ${targetMission.modules.generation.jobId}`
+              : 'Drop flight-*.json logs or create a calculated mission'
+          );
+        }
+      }
+    }
 
     async function applyMissionTrajectory(
       mission,
@@ -473,6 +551,14 @@ async function bootstrap() {
       onOpenCislunarView: () => {
         setViewMode(VIEW_MODES.CISLUNAR);
       },
+      onOpenDashboard: (mission) => {
+        openMissionDashboard(mission);
+      },
+      onFlightLogGenerated: ({ flightLog, filename }) => {
+        if (flightLog && dashboardModal.isOpen) {
+          dashboardModal.ingestFlightLog(flightLog, { filename });
+        }
+      },
       onLandToMissionTarget: (mission) => {
         if (sceneManager.viewMode === VIEW_MODES.CISLUNAR || !mission?.landingSite) return;
         const date =
@@ -593,6 +679,10 @@ async function bootstrap() {
 
     uiController.onHomeClick(() => {
       sceneManager.resetView();
+    });
+
+    uiController.onDashboardClick(() => {
+      openMissionDashboard();
     });
 
     const raycastController = new RaycastController(
